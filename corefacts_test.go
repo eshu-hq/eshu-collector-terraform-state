@@ -29,9 +29,6 @@ func coreTestAuthorization(t *testing.T) (*conformance.CoreFactContext, []string
 		FactKindStateProviderBinding,
 		FactKindStateTagObservation,
 		FactKindStateWarning,
-		FactKindIncidentAppliedPagerDutyResource,
-		FactKindIncidentAppliedAlertRoute,
-		FactKindIncidentCoverageWarning,
 	}
 	facts := make([]conformance.CoreFactAuthorization, 0, len(kinds))
 	for _, kind := range kinds {

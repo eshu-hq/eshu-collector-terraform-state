@@ -19,8 +19,10 @@ Emitted facts (all schema `1.0.0`, all `observed` confidence):
   `terraform_state_output`, `terraform_state_module`,
   `terraform_state_provider_binding`, `terraform_state_tag_observation`,
   `terraform_state_warning`
-- `incident_routing.applied_pagerduty_resource`,
-  `incident_routing.applied_alert_route`, `incident_routing.coverage_warning`
+No `incident_routing.*` kinds: the shared component registry enforces one
+owner per fact kind and `dev.eshu.collector.pagerduty` owns
+`incident_routing.coverage_warning` (ops-qa installer conflict,
+eshu-hq/eshu#8868; reverses the #9195 EXTEND).
 
 Explicitly excluded: `terraform_state_candidate` stays git-owned (git-core,
 `core_owned`). This producer must never declare or emit it.
@@ -40,7 +42,7 @@ harness only accepts them with trusted host-granted coverage: every
 `conformance.Run` in this repo's tests supplies `CoreFacts` authorizations
 for this producer, version, collector kind, and schema plus the
 reserved-kind inventory (the #8851 host-granted-kind path, available in the
-relocated SDK). The three dotted `incident_routing.*` kinds pass either way.
+relocated SDK).
 
 ## Build and test from a clean clone
 
@@ -123,8 +125,7 @@ Bare-kind gate: the `conform` path requires a granted core kind to carry a
 coverage ([#8851](https://github.com/eshu-hq/eshu/issues/8851) relocated the
 SDK modules so the harness accepts it). The seven bare `terraform_state_*`
 kinds therefore pass only with `CoreFacts` coverage — which this repo's
-tests supply and the host supplies at install/activation — while the three
-dotted `incident_routing.*` kinds pass either way. See
+tests supply and the host supplies at install/activation. See
 [PORT_PLAN.md](PORT_PLAN.md).
 
 ## Remote proof

@@ -53,21 +53,11 @@ spec:
         - 1.0.0
       sourceConfidence:
         - observed
-    - kind: incident_routing.applied_pagerduty_resource
-      schemaVersions:
-        - 1.0.0
-      sourceConfidence:
-        - observed
-    - kind: incident_routing.applied_alert_route
-      schemaVersions:
-        - 1.0.0
-      sourceConfidence:
-        - observed
-    - kind: incident_routing.coverage_warning
-      schemaVersions:
-        - 1.0.0
-      sourceConfidence:
-        - observed
+    # No incident_routing kinds: the shared component registry enforces one
+    # owner per fact kind and dev.eshu.collector.pagerduty owns
+    # incident_routing.coverage_warning (ops-qa installer conflict,
+    # eshu-hq/eshu#8868). Reverses the #9195 EXTEND; re-add only when
+    # producer delegation settles a single owner.
   consumerContracts:
     reducer:
       phases:
