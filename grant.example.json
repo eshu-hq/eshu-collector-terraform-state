@@ -1,0 +1,12 @@
+[
+  {"expires_at":"2027-09-01T00:00:00Z","kind":"terraform_state_snapshot","producer_id":"dev.eshu.collector.terraform-state","revoked":false,"schema_versions":["1.0.0"],"scope":"terraform_state","version":"0.1.0"},
+  {"expires_at":"2027-09-01T00:00:00Z","kind":"terraform_state_resource","producer_id":"dev.eshu.collector.terraform-state","revoked":false,"schema_versions":["1.0.0"],"scope":"terraform_state","version":"0.1.0"},
+  {"expires_at":"2027-09-01T00:00:00Z","kind":"terraform_state_output","producer_id":"dev.eshu.collector.terraform-state","revoked":false,"schema_versions":["1.0.0"],"scope":"terraform_state","version":"0.1.0"},
+  {"expires_at":"2027-09-01T00:00:00Z","kind":"terraform_state_module","producer_id":"dev.eshu.collector.terraform-state","revoked":false,"schema_versions":["1.0.0"],"scope":"terraform_state","version":"0.1.0"},
+  {"expires_at":"2027-09-01T00:00:00Z","kind":"terraform_state_provider_binding","producer_id":"dev.eshu.collector.terraform-state","revoked":false,"schema_versions":["1.0.0"],"scope":"terraform_state","version":"0.1.0"},
+  {"expires_at":"2027-09-01T00:00:00Z","kind":"terraform_state_tag_observation","producer_id":"dev.eshu.collector.terraform-state","revoked":false,"schema_versions":["1.0.0"],"scope":"terraform_state","version":"0.1.0"},
+  {"expires_at":"2027-09-01T00:00:00Z","kind":"terraform_state_warning","producer_id":"dev.eshu.collector.terraform-state","revoked":false,"schema_versions":["1.0.0"],"scope":"terraform_state","version":"0.1.0"},
+  {"expires_at":"2027-09-01T00:00:00Z","kind":"incident_routing.applied_pagerduty_resource","producer_id":"dev.eshu.collector.terraform-state","revoked":false,"schema_versions":["1.0.0"],"scope":"terraform_state","version":"0.1.0"},
+  {"expires_at":"2027-09-01T00:00:00Z","kind":"incident_routing.applied_alert_route","producer_id":"dev.eshu.collector.terraform-state","revoked":false,"schema_versions":["1.0.0"],"scope":"terraform_state","version":"0.1.0"},
+  {"expires_at":"2027-09-01T00:00:00Z","kind":"incident_routing.coverage_warning","producer_id":"dev.eshu.collector.terraform-state","revoked":false,"schema_versions":["1.0.0"],"scope":"terraform_state","version":"0.1.0"}
+]

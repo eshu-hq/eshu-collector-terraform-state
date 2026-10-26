@@ -1,0 +1,80 @@
+apiVersion: eshu.dev/v1alpha1
+kind: ComponentPackage
+metadata:
+  id: dev.eshu.collector.terraform-state
+  name: Terraform State collector
+  publisher: eshu-hq
+  version: 0.1.0
+spec:
+  compatibleCore: ">=0.0.5 <0.2.0"
+  componentType: collector
+  collectorKinds:
+    - terraform_state
+  runtime:
+    sdkProtocol: collector-sdk/v1alpha1
+    adapter: process
+  artifacts:
+    # SCAFFOLD PLACEHOLDER DIGEST: no image has been pushed yet. The digest
+    # below is sha256("esu-collector-terraform-state:unpinned-scaffold") and
+    # names no pullable artifact. Re-pin with scripts/pin-digest.sh after the
+    # first image push; manifest_test.go rejects only the all-zero
+    # placeholder so this gate stays meaningful, not green-by-accident.
+    - platform: linux/amd64
+      image: ghcr.io/eshu-hq/terraform-state-collector@sha256:057cd29e852155a869fb190b683df35cb1cd5e56b440a087e2286ab4d3e164e8
+  emittedFacts:
+    - kind: terraform_state_snapshot
+      schemaVersions:
+        - 1.0.0
+      sourceConfidence:
+        - observed
+    - kind: terraform_state_resource
+      schemaVersions:
+        - 1.0.0
+      sourceConfidence:
+        - observed
+    - kind: terraform_state_output
+      schemaVersions:
+        - 1.0.0
+      sourceConfidence:
+        - observed
+    - kind: terraform_state_module
+      schemaVersions:
+        - 1.0.0
+      sourceConfidence:
+        - observed
+    - kind: terraform_state_provider_binding
+      schemaVersions:
+        - 1.0.0
+      sourceConfidence:
+        - observed
+    - kind: terraform_state_tag_observation
+      schemaVersions:
+        - 1.0.0
+      sourceConfidence:
+        - observed
+    - kind: terraform_state_warning
+      schemaVersions:
+        - 1.0.0
+      sourceConfidence:
+        - observed
+    - kind: incident_routing.applied_pagerduty_resource
+      schemaVersions:
+        - 1.0.0
+      sourceConfidence:
+        - observed
+    - kind: incident_routing.applied_alert_route
+      schemaVersions:
+        - 1.0.0
+      sourceConfidence:
+        - observed
+    - kind: incident_routing.coverage_warning
+      schemaVersions:
+        - 1.0.0
+      sourceConfidence:
+        - observed
+  consumerContracts:
+    reducer:
+      phases:
+        - source_evidence_only:no_graph_truth
+  telemetry:
+    metricsPrefix: eshu_dp_tfstate_
