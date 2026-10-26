@@ -18,56 +18,127 @@ import (
 	collector "github.com/eshu-hq/eshu-collector-terraform-state"
 )
 
-var validImageRef = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._\-/:@]*:[A-Za-z0-9][A-Za-z0-9._\-]*(@sha256:[0-9a-f]{64})?$`)
+const (
+	seededBinaryName   = "collector"
+	seededManifestName = "manifest.yaml"
+	// imageRefEnv supplies the digest-pinned image reference when --image-ref
+	// is not given; the flag wins.
+	imageRefEnv = "COLLECTOR_IMAGE_REF"
+)
 
-// runSeed implements the `seed` subcommand: write this binary plus the
-// stamped manifest into dest for the init-container install pattern.
+var (
+	// imageRefPattern is the only reference shape seed stamps into a
+	// manifest: a lowercase repository (dot, dash, or underscore separated
+	// path segments, with an optional registry port), then a full sha256
+	// digest. It admits no quote, "$", "#", bracket, whitespace, or other
+	// YAML-significant character, so a stamped line is always a plain scalar.
+	// Go's "$" matches only at the end of the text, never before a final
+	// newline.
+	imageRefPattern = regexp.MustCompile(
+		`^[a-z0-9]+([._-][a-z0-9]+)*(:[0-9]+)?(/[a-z0-9]+([._-][a-z0-9]+)*)*@sha256:[0-9a-f]{64}$`)
+	manifestImageLinePattern = regexp.MustCompile(`(?m)^([ \t]*image:[ \t]*)\S+[ \t]*$`)
+)
+
+// runSeed implements `collector seed --dest DIR [--image-ref REF@sha256:DIGEST]`.
+// It writes DIR/collector (this binary, mode 0755) and DIR/manifest.yaml (the
+// embedded manifest, mode 0644). Re-running it is safe: files are replaced
+// atomically with identical content. --image-ref, or the COLLECTOR_IMAGE_REF
+// environment variable when the flag is absent, stamps the digest-pinned image
+// reference the operator deployed into the manifest's artifact entry, because
+// an image cannot embed its own digest. One trailing newline is trimmed from
+// the value (an environment variable often carries one); anything else that
+// does not match imageRefPattern exits non-zero before any file is written,
+// and the error never echoes the value. Without a reference, the repository
+// placeholder is written unchanged.
 func runSeed(args []string, stdout io.Writer, getenv func(string) string) error {
-	fs := flag.NewFlagSet("seed", flag.ContinueOnError)
-	dest := fs.String("dest", "", "directory to install the satellite binary and manifest into")
-	imageRef := fs.String("image-ref", "", "full image reference (name:tag@sha256:digest) to stamp into the manifest")
-	if err := fs.Parse(args); err != nil {
-		return err
+	flags := flag.NewFlagSet("seed", flag.ContinueOnError)
+	flags.SetOutput(io.Discard)
+	dest := flags.String("dest", "", "directory to write the collector binary and manifest into")
+	imageRef := flags.String("image-ref", "", "optional digest-pinned image reference (name@sha256:<64 lowercase hex>) to record in the manifest artifact; defaults to $"+imageRefEnv)
+	if err := flags.Parse(args); err != nil {
+		return fmt.Errorf("seed: %w", err)
 	}
-	if *dest == "" {
-		return errors.New("seed: --dest is required")
+	if flags.NArg() > 0 {
+		return fmt.Errorf("seed: unexpected argument %q", flags.Arg(0))
 	}
-	if !validImageRef.MatchString(*imageRef) {
-		return fmt.Errorf("seed: invalid --image-ref %q: want name:tag[@sha256:digest]", *imageRef)
-	}
-	if err := os.MkdirAll(*dest, 0o755); err != nil { // #nosec G301 -- seed dir must be executable to run the installed binary
-		return fmt.Errorf("seed: create dest: %w", err)
-	}
-	exe, err := os.Executable()
+	executable, err := os.Executable()
 	if err != nil {
-		return fmt.Errorf("seed: locate own executable: %w", err)
+		return errors.New("seed: resolve own executable")
 	}
-	digest, err := copyExecutable(exe, filepath.Join(*dest, "collector"))
+	manifest, err := manifestFor(collector.ManifestYAML, selectImageRef(*imageRef, getenv))
 	if err != nil {
 		return err
 	}
-	manifest := string(collector.ManifestYAML)
-	if manifest == "" {
-		return errors.New("seed: embedded manifest is empty")
+	digest, err := seed(*dest, executable, manifest)
+	if err != nil {
+		return err
 	}
-	// The manifest embeds `image: <placeholder>` when the build pins no
-	// digest; replace it with the deployed reference. A config env override
-	// wins when set so operators can retarget in place.
-	target := *imageRef
-	if getenv != nil {
-		if override := getenv("ESHU_COLLECTOR_IMAGE"); override != "" {
-			target = override
-		}
+	_, err = fmt.Fprintf(stdout, "seeded %s sha256:%s\n", filepath.Join(*dest, seededBinaryName), digest)
+	return err
+}
+
+// selectImageRef returns the reference to stamp: the flag value when it is not
+// empty, otherwise the environment variable. Each has one trailing newline
+// trimmed first, so a lone newline counts as unset. Nothing else is trimmed.
+func selectImageRef(flagValue string, getenv func(string) string) string {
+	if ref := strings.TrimSuffix(flagValue, "\n"); ref != "" {
+		return ref
 	}
-	stamped := stampImageRef(manifest, target)
-	if err := writeAtomic(filepath.Join(*dest, "manifest.yaml"), 0o644, func(w io.Writer) error {
-		_, err := io.WriteString(w, stamped)
+	if getenv == nil {
+		return ""
+	}
+	return strings.TrimSuffix(getenv(imageRefEnv), "\n")
+}
+
+// manifestFor returns the manifest bytes to seed, stamping the image reference
+// into the artifact entry when one is given. An empty image leaves the
+// manifest unchanged; any other value must match imageRefPattern exactly.
+func manifestFor(manifest []byte, image string) ([]byte, error) {
+	if image == "" {
+		return manifest, nil
+	}
+	if !imageRefPattern.MatchString(image) {
+		return nil, errors.New("seed: image reference must be name@sha256:<64 lowercase hex digits>")
+	}
+	return stampImage(manifest, image)
+}
+
+// stampImage returns manifest with its one artifact image set to image,
+// changing nothing else. It replaces literally: a template replacement would
+// expand "$1" and "${name}" inside the reference and silently alter it. It
+// fails when the manifest does not declare exactly one artifact image, so a
+// stamp is never dropped or applied twice.
+func stampImage(manifest []byte, image string) ([]byte, error) {
+	if len(manifestImageLinePattern.FindAllIndex(manifest, -1)) != 1 {
+		return nil, errors.New("seed: manifest must declare exactly one artifact image to stamp")
+	}
+	return manifestImageLinePattern.ReplaceAllFunc(manifest, func(line []byte) []byte {
+		prefix := manifestImageLinePattern.FindSubmatch(line)[1]
+		return append(append([]byte(nil), prefix...), image...)
+	}), nil
+}
+
+// seed copies the executable and writes the manifest into dest, returning the
+// hex SHA-256 of the seeded binary.
+func seed(dest string, executable string, manifest []byte) (string, error) {
+	dest = strings.TrimSpace(dest)
+	if dest == "" {
+		return "", errors.New("seed: --dest is required")
+	}
+	if err := os.MkdirAll(dest, 0o755); err != nil { // #nosec G301 -- seed dir must be executable to run the installed binary
+		return "", errors.New("seed: create destination directory")
+	}
+	digest, err := copyExecutable(executable, filepath.Join(dest, seededBinaryName))
+	if err != nil {
+		return "", err
+	}
+	if err := writeAtomic(filepath.Join(dest, seededManifestName), 0o644, func(w io.Writer) error {
+		_, err := w.Write(manifest)
 		return err
 	}); err != nil {
-		return fmt.Errorf("seed: write manifest: %w", err)
+		return "", errors.New("seed: write manifest")
 	}
-	_, _ = fmt.Fprintf(stdout, "seeded %s image=%s sha256=%s\n", filepath.Join(*dest, "collector"), target, digest)
-	return nil
+	return digest, nil
 }
 
 func copyExecutable(source string, target string) (string, error) {
@@ -110,20 +181,4 @@ func writeAtomic(target string, mode os.FileMode, write func(io.Writer) error) (
 		return err
 	}
 	return os.Rename(tmpName, target)
-}
-
-// stampImageRef replaces an `image: <placeholder>` line with the deployed
-// reference. When the manifest has no placeholder line, the document is
-// returned unchanged.
-func stampImageRef(manifest string, imageRef string) string {
-	lines := strings.Split(manifest, "\n")
-	stamped := false
-	for i, line := range lines {
-		trimmed := strings.TrimLeft(line, " \t")
-		if !stamped && strings.HasPrefix(trimmed, "image:") {
-			lines[i] = line[:len(line)-len(trimmed)] + "image: " + imageRef
-			stamped = true
-		}
-	}
-	return strings.Join(lines, "\n")
 }
