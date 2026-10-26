@@ -14,13 +14,9 @@ spec:
     sdkProtocol: collector-sdk/v1alpha1
     adapter: process
   artifacts:
-    # SCAFFOLD PLACEHOLDER DIGEST: no image has been pushed yet. The digest
-    # below is sha256("esu-collector-terraform-state:unpinned-scaffold") and
-    # names no pullable artifact. Re-pin with scripts/pin-digest.sh after the
-    # first image push; manifest_test.go rejects only the all-zero
-    # placeholder so this gate stays meaningful, not green-by-accident.
+    # Pinned 0.1.0 linux/amd64 image via scripts/pin-digest.sh.
     - platform: linux/amd64
-      image: ghcr.io/eshu-hq/terraform-state-collector@sha256:057cd29e852155a869fb190b683df35cb1cd5e56b440a087e2286ab4d3e164e8
+      image: ghcr.io/eshu-hq/eshu-collector-terraform-state@sha256:ae5bfbc85790360a2837886a3c5157b03448d3cc4358a2134f0e2a51f22170f6
   emittedFacts:
     - kind: terraform_state_snapshot
       schemaVersions:

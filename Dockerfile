@@ -6,7 +6,10 @@ WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
-RUN CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o /out/collector ./cmd/collector
+# EKS nodes are linux/amd64; pin GOARCH so builds on any host (e.g. arm64
+# dev boxes) produce a runnable binary. An unpinned build shipped an arm64
+# image that failed with "exec format error" on ops-qa (#8868).
+RUN CGO_ENABLED=0 GOARCH=amd64 go build -trimpath -ldflags='-s -w' -o /out/collector ./cmd/collector
 
 # Base digests resolved 2026-09-17; re-pin with scripts/pin-digest.sh flow when
 # bumping either base.
