@@ -19,10 +19,13 @@ Emitted facts (all schema `1.0.0`, all `observed` confidence):
   `terraform_state_output`, `terraform_state_module`,
   `terraform_state_provider_binding`, `terraform_state_tag_observation`,
   `terraform_state_warning`
-No `incident_routing.*` kinds: the shared component registry enforces one
-owner per fact kind and `dev.eshu.collector.pagerduty` owns
-`incident_routing.coverage_warning` (ops-qa installer conflict,
-eshu-hq/eshu#8868; reverses the #9195 EXTEND).
+- `incident_routing.applied_pagerduty_resource`,
+  `incident_routing.applied_alert_route`
+
+No `incident_routing.coverage_warning`: the shared component registry
+enforces one owner per fact kind and `dev.eshu.collector.pagerduty` owns
+it (ops-qa installer conflict, eshu-hq/eshu#8868; partial reversal of the
+#9195 EXTEND per arbiter verdict, coverage_warning only).
 
 Explicitly excluded: `terraform_state_candidate` stays git-owned (git-core,
 `core_owned`). This producer must never declare or emit it.

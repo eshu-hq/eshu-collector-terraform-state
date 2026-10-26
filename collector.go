@@ -46,11 +46,13 @@ const (
 	FactKindStateWarning         = "terraform_state_warning"
 	// The three incident_routing kinds co-emitted from applied Terraform
 	// state (IncidentRoutingFamilyDeclaration). All are schema 1.0.0.
-	// No incident_routing kind constants: the shared component registry
-	// enforces one owner per fact kind and dev.eshu.collector.pagerduty owns
-	// incident_routing.coverage_warning (ops-qa installer conflict,
-	// eshu-hq/eshu#8868). Reverses the #9195 EXTEND; re-add only when
-	// producer delegation settles a single owner.
+	FactKindIncidentAppliedPagerDutyResource = "incident_routing.applied_pagerduty_resource"
+	FactKindIncidentAppliedAlertRoute        = "incident_routing.applied_alert_route"
+	// No incident_routing.coverage_warning constant: the shared component
+	// registry enforces one owner per fact kind and
+	// dev.eshu.collector.pagerduty owns it (ops-qa installer conflict,
+	// eshu-hq/eshu#8868). Partial reversal of the #9195 EXTEND per arbiter
+	// verdict (coverage_warning only).
 )
 
 // Report is the placeholder source document this scaffold reads. The logic
@@ -104,6 +106,8 @@ func Contract() sdk.Contract {
 			{Kind: FactKindStateProviderBinding, SchemaVersions: []string{"1.0.0"}, SourceConfidence: observed},
 			{Kind: FactKindStateTagObservation, SchemaVersions: []string{"1.0.0"}, SourceConfidence: observed},
 			{Kind: FactKindStateWarning, SchemaVersions: []string{"1.0.0"}, SourceConfidence: observed},
+			{Kind: FactKindIncidentAppliedPagerDutyResource, SchemaVersions: []string{"1.0.0"}, SourceConfidence: observed},
+			{Kind: FactKindIncidentAppliedAlertRoute, SchemaVersions: []string{"1.0.0"}, SourceConfidence: observed},
 		},
 	}
 }
