@@ -31,6 +31,9 @@ func main() {
 }
 
 func run(args []string, stdin io.Reader, stdout io.Writer, stderr io.Writer) error {
+	if len(args) > 0 && args[0] == "seed" {
+		return runSeed(args[1:], stdout, os.Getenv)
+	}
 	flags := flag.NewFlagSet("collector", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 	inputPath := flags.String("input", "testdata/complete.json", "source JSON input file")
