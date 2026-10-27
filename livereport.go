@@ -303,6 +303,22 @@ func mergeLiveResults(results []sdk.Result, claim sdk.Claim, observedAt time.Tim
 		}
 	}
 	merged.Generation.FreshnessHint = combineFreshnessHints(hints, merged.State)
+	if merged.State == sdk.ResultTerminal || merged.State == sdk.ResultRetryable {
+		// Terminal and retryable results must not include facts, and
+		// their failure statuses carry the retry/budget signal the host
+		// acts on. A higher-severity candidate never merges facts from
+		// complete siblings: keep the first winner at the merged
+		// severity (candidates arrive in locator order, so this is
+		// deterministic) with its failure statuses intact.
+		for _, result := range results {
+			if result.State == merged.State {
+				merged.Facts = nil
+				merged.Statuses = result.Statuses
+				merged.Generation.FreshnessHint = ""
+				return merged
+			}
+		}
+	}
 	merged.Facts, merged.Statuses, merged.State = dedupeMergedFacts(merged.Facts, merged.Statuses, merged.State, claim, observedAt)
 	return merged
 }
@@ -336,9 +352,11 @@ func combineFreshnessHints(hints []string, state sdk.ResultState) string {
 // order (CollectLive sorts them), so the surviving fact is deterministic
 // across retries of the same claim: identical payloads collapse silently,
 // while a genuine payload conflict keeps the first source and records the
-// dropped sources as a warning fact so the ambiguity stays observable
-// instead of failing the claim. Without any repeat the inputs pass through
-// untouched, so single-state results keep their exact shape and statuses.
+// dropped sources as a warning fact. A conflict upgrades a complete merge
+// to partial; it never demotes a higher-severity outcome (terminal and
+// retryable merges return factless before this function runs). Without any
+// repeat the inputs pass through untouched, so single-state results keep
+// their exact shape and statuses.
 func dedupeMergedFacts(facts []sdk.Fact, statuses []sdk.Status, state sdk.ResultState, claim sdk.Claim, observedAt time.Time) ([]sdk.Fact, []sdk.Status, sdk.ResultState) {
 	order := make([]string, 0, len(facts))
 	groups := make(map[string][]sdk.Fact, len(facts))
@@ -369,18 +387,42 @@ func dedupeMergedFacts(facts []sdk.Fact, statuses []sdk.Status, state sdk.Result
 	if conflicts == 0 && len(kept) == len(facts) {
 		return facts, statuses, state
 	}
-	outcome := sdk.Status{
-		Class:        sdk.StatusComplete,
-		FactCount:    len(kept),
-		WarningCount: conflicts,
+	// The host rejects partial results without a partial/warning status
+	// and terminal/retryable results without a failure status, and it
+	// rejects facts on terminal/retryable results outright. Terminal and
+	// retryable merges never reach this function (mergeLiveResults returns
+	// the factless winner first), so the rebuilt statuses only ever
+	// describe fact-bearing complete or partial outcomes: a single entry
+	// with true counts that preserves the severity signal.
+	if state != sdk.ResultComplete && state != sdk.ResultPartial {
+		return facts, statuses, state
 	}
 	outcomeState := state
-	if conflicts > 0 {
-		outcome.Class = sdk.StatusWarning
-		outcome.Partial = true
+	outcome := sdk.Status{
+		Class:     sdk.StatusComplete,
+		FactCount: len(kept),
+	}
+	if conflicts > 0 && (state == sdk.ResultComplete || state == sdk.ResultUnchanged) {
 		outcomeState = sdk.ResultPartial
 	}
+	if outcomeState == sdk.ResultPartial {
+		outcome.Class = sdk.StatusWarning
+		outcome.Partial = true
+		outcome.WarningCount = countKind(kept, FactKindStateWarning)
+	}
 	return kept, []sdk.Status{outcome}, outcomeState
+}
+
+// countKind counts merged facts of one kind, so rebuilt statuses carry true
+// counts after the dedupe shortens the fact list.
+func countKind(facts []sdk.Fact, kind string) int {
+	count := 0
+	for _, fact := range facts {
+		if fact.Kind == kind {
+			count++
+		}
+	}
+	return count
 }
 
 // factPayloadEqual compares fact payloads by canonical JSON encoding.

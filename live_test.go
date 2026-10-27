@@ -290,6 +290,12 @@ func liveTestClaim() sdk.Claim {
 		SourceSystem:  SourceSystem,
 		Scope:         sdk.Scope{ID: "component:terraform-state-primary", Kind: "component"},
 		GenerationID:  "generation-9",
+		WorkItemID:    "work-item-9",
+		FencingToken:  "fence-9",
+		ConfigHandle:  "config-9",
+		SourceRunID:   "source-run-9",
+		Attempt:       1,
+		Deadline:      time.Now().Add(time.Hour).UTC(),
 	}
 }
 
@@ -392,6 +398,13 @@ func TestCollectLiveCollapsesIdenticalAddressAcrossStates(t *testing.T) {
 	if want := "lineage=lin-one serial=7 lineage=lin-two serial=9"; result.Generation.FreshnessHint != want {
 		t.Fatalf("FreshnessHint = %q, want %q", result.Generation.FreshnessHint, want)
 	}
+	if len(result.Statuses) != 1 || result.Statuses[0].Class != sdk.StatusComplete {
+		t.Fatalf("Statuses = %+v, want one complete status after identical collapse", result.Statuses)
+	}
+	if result.Statuses[0].FactCount != len(result.Facts) {
+		t.Fatalf("status FactCount = %d, want %d after collapse", result.Statuses[0].FactCount, len(result.Facts))
+	}
+	assertHostAccepts(t, result)
 }
 
 // TestCollectLiveConflictAcrossStatesWarnsInsteadOfFailing proves a genuine
@@ -442,6 +455,125 @@ func TestCollectLiveConflictAcrossStatesWarnsInsteadOfFailing(t *testing.T) {
 	if want := "lineage=lin-one serial=7 lineage=lin-two serial=9"; result.Generation.FreshnessHint != want {
 		t.Fatalf("FreshnessHint = %q, want %q", result.Generation.FreshnessHint, want)
 	}
+	if len(result.Statuses) != 1 || result.Statuses[0].Class != sdk.StatusWarning || !result.Statuses[0].Partial {
+		t.Fatalf("Statuses = %+v, want one partial warning status after conflict", result.Statuses)
+	}
+	if result.Statuses[0].FactCount != len(result.Facts) || result.Statuses[0].WarningCount != warnings {
+		t.Fatalf("status counts = %+v, want true fact and warning counts", result.Statuses[0])
+	}
+	assertHostAccepts(t, result)
+}
+
+// assertHostAccepts runs the merged result through the host's own SDK
+// validation: the contract gate the extension host enforces before commit
+// (terminal/retryable must be factless with a failure status, partial
+// needs a partial/warning status, no conflicting duplicate stable keys).
+func assertHostAccepts(t *testing.T, result sdk.Result) {
+	t.Helper()
+	if _, err := sdk.NewValidator(Contract()).ValidateResult(result); err != nil {
+		t.Fatalf("host validation rejected merged result: %v", err)
+	}
+}
+
+// TestCollectLiveTransientPlusCompleteStaysRetryable proves a mixed merge
+// never demotes the retry signal: one transient source plus one healthy
+// state returns a factless retryable result with the bounded-retry status,
+// so the host releases the claim for retry instead of committing a partial
+// claim and losing the retry.
+func TestCollectLiveTransientPlusCompleteStaysRetryable(t *testing.T) {
+	t.Parallel()
+
+	good := `{"serial": 3, "lineage": "lin-good", "resources": [{"mode": "managed", "type": "aws_s3_bucket", "name": "one", "instances": [{}]}]}`
+	live := LiveConfig{
+		Seeds: []DiscoverySeed{
+			{Kind: BackendS3, TargetScopeID: "s", Bucket: "b", Key: "bad/terraform.tfstate", Region: "us-east-1"},
+			{Kind: BackendS3, TargetScopeID: "s", Bucket: "b", Key: "good/terraform.tfstate", Region: "us-east-1"},
+		},
+		TargetScopes: []TargetScope{{TargetScopeID: "s"}},
+	}
+	reader := &fakeLiveReader{
+		objects:   map[string][]byte{"b/good/terraform.tfstate": []byte(good)},
+		transient: map[string]bool{"b/bad/terraform.tfstate": true},
+	}
+	result, err := CollectLive(context.Background(), liveTestClaim(), live, reader, CollectOptions{ObservedAt: time.Now().UTC()})
+	if err != nil {
+		t.Fatalf("CollectLive error = %v", err)
+	}
+	if result.State != sdk.ResultRetryable {
+		t.Fatalf("State = %q, want retryable so the host retries the claim", result.State)
+	}
+	if len(result.Facts) != 0 {
+		t.Fatalf("facts = %d, want factless so the host accepts the retryable", len(result.Facts))
+	}
+	if len(result.Statuses) != 1 || result.Statuses[0].Class != sdk.StatusFailure || result.Statuses[0].RetryAfterSeconds == 0 {
+		t.Fatalf("Statuses = %+v, want one bounded-retry failure status", result.Statuses)
+	}
+	assertHostAccepts(t, result)
+}
+
+// TestMergeLiveResultsTerminalPlusCompleteStaysFactless proves a terminal
+// candidate is never merged with complete facts: the host rejects facts on
+// terminal results, so the merge returns the factless winner with its
+// failure status intact instead of an invalid mixed result.
+func TestMergeLiveResultsTerminalPlusCompleteStaysFactless(t *testing.T) {
+	t.Parallel()
+
+	claim := liveTestClaim()
+	observedAt := time.Now().UTC()
+	complete, err := Collect(claim, Report{GeneratedAt: observedAt, Source: "s3://b/k", Serial: 1, Lineage: "lin-1", Records: []Record{{ID: "a.b", Name: "b", Detail: "managed"}}}, CollectOptions{ObservedAt: observedAt, SourceURI: "s3://b/k"})
+	if err != nil {
+		t.Fatalf("Collect error = %v", err)
+	}
+	terminal := terminalResult(claim, observedAt, "over-budget")
+	merged := mergeLiveResults([]sdk.Result{complete, terminal}, claim, observedAt)
+	if merged.State != sdk.ResultTerminal {
+		t.Fatalf("State = %q, want terminal", merged.State)
+	}
+	if len(merged.Facts) != 0 {
+		t.Fatalf("facts = %d, want factless terminal", len(merged.Facts))
+	}
+	if len(merged.Statuses) != 1 || merged.Statuses[0].Class != sdk.StatusFailure || merged.Statuses[0].FailureClass != "over-budget" {
+		t.Fatalf("Statuses = %+v, want the preserved budget failure", merged.Statuses)
+	}
+	assertHostAccepts(t, merged)
+}
+
+// TestMergeLiveResultsPartialCollapseKeepsPartial proves identical
+// collapse under a partial merge keeps the partial signal: a single
+// partial warning status with true counts, which the host accepts.
+func TestMergeLiveResultsPartialCollapseKeepsPartial(t *testing.T) {
+	t.Parallel()
+
+	claim := liveTestClaim()
+	observedAt := time.Now().UTC()
+	mkFact := func(uri string) sdk.Fact {
+		return sdk.Fact{
+			Kind: FactKindStateResource, SchemaVersion: "1.0.0", StableKey: "record:aws_vpc.default",
+			SourceConfidence: sdk.SourceConfidenceObserved, ObservedAt: observedAt,
+			SourceRef: sdk.SourceRef{SourceSystem: SourceSystem, ScopeID: claim.Scope.ID, GenerationID: claim.GenerationID, FactKey: "record:aws_vpc.default", URI: uri, RecordID: "aws_vpc.default"},
+			Payload:   map[string]any{"detail": "data", "id": "aws_vpc.default", "name": "aws_vpc"},
+		}
+	}
+	in := []sdk.Fact{mkFact("s3://b/one"), mkFact("s3://b/two")}
+	statuses := []sdk.Status{{Class: sdk.StatusComplete, FactCount: 1}, {Class: sdk.StatusWarning, Partial: true, WarningCount: 1, FactCount: 1}}
+	outFacts, outStatuses, outState := dedupeMergedFacts(in, statuses, sdk.ResultPartial, claim, observedAt)
+	if outState != sdk.ResultPartial {
+		t.Fatalf("State = %q, want partial preserved", outState)
+	}
+	if len(outFacts) != 1 {
+		t.Fatalf("facts = %d, want the collapsed single fact", len(outFacts))
+	}
+	if len(outStatuses) != 1 || outStatuses[0].Class != sdk.StatusWarning || !outStatuses[0].Partial {
+		t.Fatalf("Statuses = %+v, want one partial warning status", outStatuses)
+	}
+	if outStatuses[0].FactCount != 1 {
+		t.Fatalf("status FactCount = %d, want true count 1", outStatuses[0].FactCount)
+	}
+	assertHostAccepts(t, sdk.Result{
+		ProtocolVersion: sdk.ProtocolVersionV1Alpha1, State: outState, Claim: claim,
+		Generation: sdk.Generation{ID: claim.GenerationID, ObservedAt: observedAt, FreshnessHint: "lineage=lin-1 serial=1"},
+		Facts:      outFacts, Statuses: outStatuses,
+	})
 }
 
 // TestReportForStateCapturesSerialAndLineage proves the state revision
