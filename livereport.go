@@ -50,12 +50,14 @@ type liveStateResource struct {
 // construction.
 func ReportForState(locator string, body []byte) (Report, error) {
 	var document struct {
+		Serial    int64               `json:"serial"`
+		Lineage   string              `json:"lineage"`
 		Resources []liveStateResource `json:"resources"`
 	}
 	if err := json.Unmarshal(body, &document); err != nil {
 		return Report{}, fmt.Errorf("decode state document: %w", err)
 	}
-	report := Report{GeneratedAt: time.Now().UTC(), Source: locator}
+	report := Report{GeneratedAt: time.Now().UTC(), Source: locator, Serial: document.Serial, Lineage: document.Lineage}
 	for _, resource := range document.Resources {
 		address := liveResourceAddress(resource)
 		if address == "" {
@@ -273,6 +275,7 @@ func mergeLiveResults(results []sdk.Result, claim sdk.Claim, observedAt time.Tim
 		Claim:           claim,
 		Generation:      sdk.Generation{ID: claim.GenerationID, ObservedAt: observedAt},
 	}
+	hints := make([]string, 0, len(results))
 	rank := map[sdk.ResultState]int{
 		sdk.ResultUnchanged: 0,
 		sdk.ResultComplete:  1,
@@ -286,17 +289,42 @@ func mergeLiveResults(results []sdk.Result, claim sdk.Claim, observedAt time.Tim
 		if rank[result.State] > rank[merged.State] {
 			merged.State = result.State
 		}
-		if result.Generation.FreshnessHint != "" && merged.Generation.FreshnessHint == "" {
-			merged.Generation.FreshnessHint = result.Generation.FreshnessHint
+		if hint := strings.TrimSpace(result.Generation.FreshnessHint); hint != "" {
+			duplicate := false
+			for _, seen := range hints {
+				if seen == hint {
+					duplicate = true
+					break
+				}
+			}
+			if !duplicate {
+				hints = append(hints, hint)
+			}
 		}
 	}
+	merged.Generation.FreshnessHint = combineFreshnessHints(hints, merged.State)
 	merged.Facts, merged.Statuses, merged.State = dedupeMergedFacts(merged.Facts, merged.Statuses, merged.State, claim, observedAt)
-	// A freshness hint only describes an unchanged claim: emitting facts
-	// alongside one would contradict the result state.
-	if merged.State != sdk.ResultUnchanged {
-		merged.Generation.FreshnessHint = ""
-	}
 	return merged
+}
+
+// combineFreshnessHints folds per-candidate generation hints into the merged
+// generation hint. One distinct hint passes through untouched, so
+// single-state claims keep the in-tree `lineage=<uuid> serial=<n>` shape.
+// Several states join in candidate (locator) order. The `unchanged-digest`
+// token only describes an unchanged claim: emitting facts alongside one
+// would contradict the result state, so a merged result that commits facts
+// drops it in favor of the identity hints.
+func combineFreshnessHints(hints []string, state sdk.ResultState) string {
+	if state == sdk.ResultUnchanged {
+		return strings.Join(hints, " ")
+	}
+	kept := make([]string, 0, len(hints))
+	for _, hint := range hints {
+		if hint != "unchanged-digest" {
+			kept = append(kept, hint)
+		}
+	}
+	return strings.Join(kept, " ")
 }
 
 // dedupeMergedFacts collapses facts sharing one (kind, stable key) across

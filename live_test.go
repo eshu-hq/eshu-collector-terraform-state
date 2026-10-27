@@ -300,7 +300,7 @@ func liveTestClaim() sdk.Claim {
 func TestCollectLiveMergesTwoStates(t *testing.T) {
 	t.Parallel()
 
-	state := `{"resources": [{"mode": "managed", "type": "aws_s3_bucket", "name": "one", "instances": [{}]}]}`
+	state := `{"serial": 3, "lineage": "lin-merge", "resources": [{"mode": "managed", "type": "aws_s3_bucket", "name": "one", "instances": [{}]}]}`
 	live := LiveConfig{
 		Seeds: []DiscoverySeed{
 			{Kind: BackendS3, TargetScopeID: "s", Bucket: "b", Key: "one/terraform.tfstate", Region: "us-east-1"},
@@ -341,6 +341,9 @@ func TestCollectLiveMergesTwoStates(t *testing.T) {
 	if resources != 1 || snapshots != 2 {
 		t.Fatalf("resources = %d, snapshots = %d; want one collapsed resource and one snapshot per state", resources, snapshots)
 	}
+	if want := "lineage=lin-merge serial=3"; result.Generation.FreshnessHint != want {
+		t.Fatalf("FreshnessHint = %q, want %q", result.Generation.FreshnessHint, want)
+	}
 }
 
 // TestCollectLiveCollapsesIdenticalAddressAcrossStates proves the ops-qa
@@ -352,8 +355,8 @@ func TestCollectLiveCollapsesIdenticalAddressAcrossStates(t *testing.T) {
 	t.Parallel()
 
 	shared := `{"mode": "data", "type": "aws_vpc", "name": "default", "instances": [{}]}`
-	one := `{"resources": [` + shared + `, {"mode": "managed", "type": "aws_s3_bucket", "name": "one", "instances": [{}]}]}`
-	two := `{"resources": [` + shared + `, {"mode": "managed", "type": "aws_s3_bucket", "name": "two", "instances": [{}]}]}`
+	one := `{"serial": 7, "lineage": "lin-one", "resources": [` + shared + `, {"mode": "managed", "type": "aws_s3_bucket", "name": "one", "instances": [{}]}]}`
+	two := `{"serial": 9, "lineage": "lin-two", "resources": [` + shared + `, {"mode": "managed", "type": "aws_s3_bucket", "name": "two", "instances": [{}]}]}`
 	live := LiveConfig{
 		Seeds: []DiscoverySeed{
 			{Kind: BackendS3, TargetScopeID: "s", Bucket: "b", Key: "one/terraform.tfstate", Region: "us-east-1"},
@@ -386,6 +389,9 @@ func TestCollectLiveCollapsesIdenticalAddressAcrossStates(t *testing.T) {
 	if len(seen) != 3 {
 		t.Fatalf("distinct resource keys = %d, want shared plus two unique", len(seen))
 	}
+	if want := "lineage=lin-one serial=7 lineage=lin-two serial=9"; result.Generation.FreshnessHint != want {
+		t.Fatalf("FreshnessHint = %q, want %q", result.Generation.FreshnessHint, want)
+	}
 }
 
 // TestCollectLiveConflictAcrossStatesWarnsInsteadOfFailing proves a genuine
@@ -395,8 +401,8 @@ func TestCollectLiveCollapsesIdenticalAddressAcrossStates(t *testing.T) {
 func TestCollectLiveConflictAcrossStatesWarnsInsteadOfFailing(t *testing.T) {
 	t.Parallel()
 
-	one := `{"resources": [{"mode": "managed", "type": "aws_vpc", "name": "default", "instances": [{}]}]}`
-	two := `{"resources": [{"mode": "data", "type": "aws_vpc", "name": "default", "instances": [{}]}]}`
+	one := `{"serial": 7, "lineage": "lin-one", "resources": [{"mode": "managed", "type": "aws_vpc", "name": "default", "instances": [{}]}]}`
+	two := `{"serial": 9, "lineage": "lin-two", "resources": [{"mode": "data", "type": "aws_vpc", "name": "default", "instances": [{}]}]}`
 	live := LiveConfig{
 		Seeds: []DiscoverySeed{
 			{Kind: BackendS3, TargetScopeID: "s", Bucket: "b", Key: "one/terraform.tfstate", Region: "us-east-1"},
@@ -432,6 +438,44 @@ func TestCollectLiveConflictAcrossStatesWarnsInsteadOfFailing(t *testing.T) {
 	}
 	if warnings == 0 {
 		t.Fatalf("warnings = 0, want a warning naming the dropped source")
+	}
+	if want := "lineage=lin-one serial=7 lineage=lin-two serial=9"; result.Generation.FreshnessHint != want {
+		t.Fatalf("FreshnessHint = %q, want %q", result.Generation.FreshnessHint, want)
+	}
+}
+
+// TestReportForStateCapturesSerialAndLineage proves the state revision
+// identity reaches the report: the host requires it in the generation
+// freshness hint, and multi-state merges join per-state pairs.
+func TestReportForStateCapturesSerialAndLineage(t *testing.T) {
+	t.Parallel()
+
+	report, err := ReportForState("s3://b/k", []byte(`{"serial": 17, "lineage": "lin-123", "resources": []}`))
+	if err != nil {
+		t.Fatalf("ReportForState error = %v", err)
+	}
+	if report.Serial != 17 || report.Lineage != "lin-123" {
+		t.Fatalf("identity = (%d, %q), want (17, lin-123)", report.Serial, report.Lineage)
+	}
+}
+
+// TestCollectStampsLineageSerialHint proves a single-state complete result
+// carries the in-tree `lineage=<uuid> serial=<n>` freshness shape the host
+// requires on every committed terraform-state claim.
+func TestCollectStampsLineageSerialHint(t *testing.T) {
+	t.Parallel()
+
+	report := Report{GeneratedAt: time.Now().UTC(), Source: "s3://b/k", Serial: 17, Lineage: "lin-123"}
+	report.Records = append(report.Records, Record{ID: "aws_s3_bucket.one", Name: "aws_s3_bucket", Detail: "managed"})
+	result, err := Collect(liveTestClaim(), report, CollectOptions{ObservedAt: time.Now().UTC(), SourceURI: "s3://b/k"})
+	if err != nil {
+		t.Fatalf("Collect error = %v", err)
+	}
+	if result.State != sdk.ResultComplete {
+		t.Fatalf("State = %q, want complete", result.State)
+	}
+	if want := "lineage=lin-123 serial=17"; result.Generation.FreshnessHint != want {
+		t.Fatalf("FreshnessHint = %q, want %q", result.Generation.FreshnessHint, want)
 	}
 }
 
@@ -530,6 +574,9 @@ func TestCollectLiveEmptyListingIsAuthoritativeEmpty(t *testing.T) {
 	}
 	if len(result.Facts) != 1 || result.Facts[0].Kind != FactKindStateSnapshot {
 		t.Fatalf("facts = %+v, want exactly the snapshot", result.Facts)
+	}
+	if want := "states=0"; result.Generation.FreshnessHint != want {
+		t.Fatalf("FreshnessHint = %q, want %q for the authoritative empty listing", result.Generation.FreshnessHint, want)
 	}
 }
 

@@ -62,6 +62,12 @@ type Report struct {
 	GeneratedAt time.Time `json:"generated_at"`
 	Source      string    `json:"source"`
 	Records     []Record  `json:"records"`
+	// Serial and Lineage identify the state revision read. The host
+	// requires a non-blank generation freshness hint on every committed
+	// terraform-state claim (identity_mismatch otherwise), so Collect
+	// renders them as `lineage=<uuid> serial=<n>`, the in-tree shape.
+	Serial  int64  `json:"serial,omitempty"`
+	Lineage string `json:"lineage,omitempty"`
 }
 
 // Record is one placeholder source row.
@@ -278,10 +284,23 @@ func Collect(claim sdk.Claim, report Report, opts CollectOptions) (sdk.Result, e
 		ProtocolVersion: sdk.ProtocolVersionV1Alpha1,
 		State:           sdk.ResultComplete,
 		Claim:           claim,
-		Generation:      sdk.Generation{ID: claim.GenerationID, ObservedAt: observedAt},
+		Generation:      sdk.Generation{ID: claim.GenerationID, ObservedAt: observedAt, FreshnessHint: stateFreshnessHint(report)},
 		Facts:           facts,
 		Statuses:        []sdk.Status{{Class: sdk.StatusComplete, FactCount: len(facts)}},
 	}, nil
+}
+
+// stateFreshnessHint renders the generation freshness hint the host requires
+// on every committed terraform-state claim (a blank hint fails the claim
+// terminal identity_mismatch). A state revision carries the in-tree
+// `lineage=<uuid> serial=<n>` shape. A report without identity — the
+// authoritative-empty listing, or an unreadable object degraded to partial —
+// reports how many states were observed instead of inventing an identity.
+func stateFreshnessHint(report Report) string {
+	if lineage := strings.TrimSpace(report.Lineage); lineage != "" {
+		return fmt.Sprintf("lineage=%s serial=%d", lineage, report.Serial)
+	}
+	return "states=0"
 }
 
 // CollectPartial is the partial-failure shape: reachable records commit as
