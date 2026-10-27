@@ -7,6 +7,14 @@ Shim seam for every entry below: the published SDK pair
 (`eshu-sdk/collector`, `eshu-sdk/factschema`) plus the `--sdk-stdio` host
 protocol in `cmd/collector` (PORT_PLAN §4). No ported file may import
 `go/internal`, core stores, or another collector (`boundary_test.go`).
+
+Satellite live-source increment (`drive/tfstate-live-source`): the `aws_s3.go`
+row below stays blocked for the full in-tree port (aws-sdk-go-v2 + DynamoDB
+lock reads), but the satellite's own live path (`live.go`, `livereport.go`,
+`s3http.go`, `s3auth.go`) covers read-only S3 discovery/fetch with a stdlib
+SigV4 client instead of porting `aws_s3.go`. Not carried over in this
+increment: conditional ETag reads, DynamoDB lock metadata, graph-backed
+backend facts, and attribute-level parsing/redaction.
 `SHIM_MAP.md` / `EXTRACTION_PREP.md` live on the extraction prep branch
 (`drive/8868-tfstate-extraction-prep`) and name no file that exists there
 under the documented names — re-verify them after they merge (gap).

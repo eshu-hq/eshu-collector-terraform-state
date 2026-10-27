@@ -18,3 +18,19 @@ config:
     maxRecordsPerClaim: 5000
     maxPayloadBytes: 65536
     claimTimeoutSeconds: 300
+  # Live activation (replaces source.input): discovery plus target_scopes.
+  # The collector resolves bucket filters/seeds to exact S3 objects and
+  # reads with ambient workload credentials only (IRSA web identity, then
+  # the process environment triple). No credential key exists in config.
+  # discovery:
+  #   backend_filters:
+  #     - target_scope_id: ops-qa-aws
+  #       backend_kind: s3
+  #       bucket: bg-ops-qa-terraform-state
+  #       region: us-east-1
+  # target_scopes:
+  #   - target_scope_id: ops-qa-aws
+  #     provider: aws
+  #     deployment_mode: account_local
+  #     allowed_regions: [us-east-1]
+  #     allowed_backends: [s3]

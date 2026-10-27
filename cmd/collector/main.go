@@ -4,6 +4,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -191,19 +192,29 @@ func runWithTimeout(work func() (sdk.Result, error), limits collector.ResourceUs
 
 // stdioPlan is a parsed SDK host request: everything parseSDKStdio learns
 // from stdin before the wall-time bound starts covering the collection.
+// A plan is either file-backed (inputPath names the source document) or
+// live (liveConfig carries discovery plus target scopes for S3 reads);
+// it is never both.
 type stdioPlan struct {
 	inputPath      string
+	live           bool
+	liveConfig     collector.LiveConfig
 	sourceURI      string
 	previousDigest string
 	limits         collector.ResourceUse
 	claim          sdk.Claim
 }
 
+// liveReaderFactory builds the S3 reader for live plans. The default
+// signs with ambient workload credentials; tests substitute a fake.
+var liveReaderFactory = func() collector.SourceReader {
+	return &collector.HTTPS3Reader{Getenv: os.Getenv}
+}
+
 // parseSDKStdio decodes and validates one collector SDK host request. It
 // performs no collection itself so run() can report the effective limits
 // and enforce their wall-time bound around the collect step.
 func parseSDKStdio(stdin io.Reader) (stdioPlan, error) {
-	plan := stdioPlan{limits: collector.DefaultResourceUse()}
 	var request sdkRequest
 	decoder := json.NewDecoder(stdin)
 	decoder.DisallowUnknownFields()
@@ -220,9 +231,27 @@ func parseSDKStdio(stdin io.Reader) (stdioPlan, error) {
 	if strings.TrimSpace(request.ProtocolVersion) != sdk.ProtocolVersionV1Alpha1 {
 		return stdioPlan{}, fmt.Errorf("protocol_version %q is unsupported", request.ProtocolVersion)
 	}
-	inputPath, err := nestedString(request.Config, "source", "input")
+	// A present source.input keeps the file path; a live activation
+	// (discovery/target_scopes, no input) resolves and fetches S3 state
+	// at claim time. Anything else fails closed with the missing-input
+	// error so a misconfigured host cannot silently emit the placeholder.
+	inputPath, present, err := nestedOptionalString(request.Config, "source", "input")
 	if err != nil {
 		return stdioPlan{}, err
+	}
+	plan := stdioPlan{limits: collector.DefaultResourceUse()}
+	if !present || strings.TrimSpace(inputPath) == "" {
+		if !collector.HasLiveDiscovery(request.Config) {
+			return stdioPlan{}, fmt.Errorf("config %q missing", "source.input")
+		}
+		liveConfig, err := collector.ParseLiveConfig(request.Config)
+		if err != nil {
+			return stdioPlan{}, err
+		}
+		plan.live = true
+		plan.liveConfig = liveConfig
+	} else {
+		plan.inputPath = inputPath
 	}
 	// A missing key falls back to the placeholder; a present-but-malformed
 	// value fails closed instead of silently emitting against the placeholder.
@@ -245,7 +274,6 @@ func parseSDKStdio(stdin io.Reader) (stdioPlan, error) {
 	if strings.TrimSpace(claim.GenerationID) == "" {
 		claim.GenerationID = "generation-1"
 	}
-	plan.inputPath = inputPath
 	plan.sourceURI = sourceURI
 	plan.previousDigest = previousDigest
 	plan.limits = limits
@@ -253,9 +281,24 @@ func parseSDKStdio(stdin io.Reader) (stdioPlan, error) {
 	return plan, nil
 }
 
-// collectStdioPlan runs the file read and Collect for a parsed request
-// under the caller's wall-time bound.
+// collectStdioPlan runs one parsed request under the caller's wall-time
+// bound: the file read and Collect for file plans, discovery plus S3
+// reads and Collect for live plans.
 func collectStdioPlan(plan stdioPlan) (sdk.Result, error) {
+	if plan.live {
+		return collector.CollectLive(
+			context.Background(),
+			plan.claim,
+			plan.liveConfig,
+			liveReaderFactory(),
+			collector.CollectOptions{
+				ObservedAt:     time.Now().UTC(),
+				SourceURI:      plan.sourceURI,
+				PreviousDigest: plan.previousDigest,
+				Limits:         plan.limits,
+			},
+		)
+	}
 	file, err := os.Open(plan.inputPath)
 	if err != nil {
 		return sdk.Result{}, err

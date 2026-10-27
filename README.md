@@ -74,6 +74,16 @@ freshness with `freshness.previousDigest`. All payloads pass
 `ValidateShareSafeKeys`; anything sensitive must be redacted before emission
 (see `collector.go` and the redaction test).
 
+Without `source.input`, a `discovery` plus `target_scopes` activation takes
+the live path: bucket filters and seeds resolve to exact S3 state objects,
+target-scope allowlists bind each candidate, and reads use ambient workload
+credentials only (IRSA web identity, then the process environment triple —
+no credential key exists in config). Each fetched state emits identity-only
+facts (resource address, type, mode; never attribute values) through the
+existing `Collect` contract. Missing objects degrade to partial with a
+`state-missing` warning, throttles release the claim retryable, and a wrong
+bucket fails the claim closed.
+
 ## Least-privilege credentials
 
 The collector receives only a bounded claim plus local config. It never gets
