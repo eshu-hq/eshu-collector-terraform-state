@@ -1,0 +1,3 @@
+# Local lane artifacts (never commit test output).
+coverage.out
+gosec.sarif
