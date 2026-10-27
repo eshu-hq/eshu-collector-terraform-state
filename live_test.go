@@ -294,8 +294,9 @@ func liveTestClaim() sdk.Claim {
 }
 
 // TestCollectLiveMergesTwoStates proves two exact seeds collect and merge:
-// complete state, one resource fact per state object, credential-free
-// s3:// source URIs, and the claim echoed back.
+// complete state, credential-free s3:// source URIs, and the claim echoed
+// back. The byte-identical states share one address, which collapses to a
+// single resource fact; each state keeps its own snapshot.
 func TestCollectLiveMergesTwoStates(t *testing.T) {
 	t.Parallel()
 
@@ -333,8 +334,104 @@ func TestCollectLiveMergesTwoStates(t *testing.T) {
 			snapshots++
 		}
 	}
-	if resources != 2 || snapshots != 2 {
-		t.Fatalf("resources = %d, snapshots = %d; want one resource and one snapshot per state", resources, snapshots)
+	// The two states are byte-identical, so their shared address collapses
+	// to one resource fact (the host rejects any repeated stable key);
+	// each state keeps its own snapshot because snapshot digests bind the
+	// source locator.
+	if resources != 1 || snapshots != 2 {
+		t.Fatalf("resources = %d, snapshots = %d; want one collapsed resource and one snapshot per state", resources, snapshots)
+	}
+}
+
+// TestCollectLiveCollapsesIdenticalAddressAcrossStates proves the ops-qa
+// failure mode stays host-valid: two states sharing one bare address with
+// byte-identical payloads emit that fact once, not twice. The host rejects
+// any repeated stable key as invalid_result (eshu-hq/eshu#8868), so the
+// merged result must carry each (kind, stable key) exactly once.
+func TestCollectLiveCollapsesIdenticalAddressAcrossStates(t *testing.T) {
+	t.Parallel()
+
+	shared := `{"mode": "data", "type": "aws_vpc", "name": "default", "instances": [{}]}`
+	one := `{"resources": [` + shared + `, {"mode": "managed", "type": "aws_s3_bucket", "name": "one", "instances": [{}]}]}`
+	two := `{"resources": [` + shared + `, {"mode": "managed", "type": "aws_s3_bucket", "name": "two", "instances": [{}]}]}`
+	live := LiveConfig{
+		Seeds: []DiscoverySeed{
+			{Kind: BackendS3, TargetScopeID: "s", Bucket: "b", Key: "one/terraform.tfstate", Region: "us-east-1"},
+			{Kind: BackendS3, TargetScopeID: "s", Bucket: "b", Key: "two/terraform.tfstate", Region: "us-east-1"},
+		},
+		TargetScopes: []TargetScope{{TargetScopeID: "s"}},
+	}
+	reader := &fakeLiveReader{objects: map[string][]byte{
+		"b/one/terraform.tfstate": []byte(one),
+		"b/two/terraform.tfstate": []byte(two),
+	}}
+	result, err := CollectLive(context.Background(), liveTestClaim(), live, reader, CollectOptions{ObservedAt: time.Now().UTC()})
+	if err != nil {
+		t.Fatalf("CollectLive error = %v", err)
+	}
+	if result.State != sdk.ResultComplete {
+		t.Fatalf("State = %q, want complete for identical cross-state facts", result.State)
+	}
+	seen := map[string]int{}
+	for _, fact := range result.Facts {
+		if fact.Kind == FactKindStateResource {
+			seen[fact.StableKey]++
+		}
+	}
+	for key, count := range seen {
+		if count != 1 {
+			t.Fatalf("StableKey %q emitted %d times, want exactly once", key, count)
+		}
+	}
+	if len(seen) != 3 {
+		t.Fatalf("distinct resource keys = %d, want shared plus two unique", len(seen))
+	}
+}
+
+// TestCollectLiveConflictAcrossStatesWarnsInsteadOfFailing proves a genuine
+// conflict (same address, different payload across states) degrades to
+// partial with a warning naming the dropped source instead of failing the
+// whole claim terminal and darkening every state.
+func TestCollectLiveConflictAcrossStatesWarnsInsteadOfFailing(t *testing.T) {
+	t.Parallel()
+
+	one := `{"resources": [{"mode": "managed", "type": "aws_vpc", "name": "default", "instances": [{}]}]}`
+	two := `{"resources": [{"mode": "data", "type": "aws_vpc", "name": "default", "instances": [{}]}]}`
+	live := LiveConfig{
+		Seeds: []DiscoverySeed{
+			{Kind: BackendS3, TargetScopeID: "s", Bucket: "b", Key: "one/terraform.tfstate", Region: "us-east-1"},
+			{Kind: BackendS3, TargetScopeID: "s", Bucket: "b", Key: "two/terraform.tfstate", Region: "us-east-1"},
+		},
+		TargetScopes: []TargetScope{{TargetScopeID: "s"}},
+	}
+	reader := &fakeLiveReader{objects: map[string][]byte{
+		"b/one/terraform.tfstate": []byte(one),
+		"b/two/terraform.tfstate": []byte(two),
+	}}
+	result, err := CollectLive(context.Background(), liveTestClaim(), live, reader, CollectOptions{ObservedAt: time.Now().UTC()})
+	if err != nil {
+		t.Fatalf("CollectLive error = %v", err)
+	}
+	if result.State != sdk.ResultPartial {
+		t.Fatalf("State = %q, want partial for a conflicting cross-state address", result.State)
+	}
+	resources, warnings := 0, 0
+	for _, fact := range result.Facts {
+		switch fact.Kind {
+		case FactKindStateResource:
+			resources++
+			if fact.StableKey != "record:aws_vpc.default" {
+				t.Fatalf("resource StableKey = %q, want the surviving shared address", fact.StableKey)
+			}
+		case FactKindStateWarning:
+			warnings++
+		}
+	}
+	if resources != 1 {
+		t.Fatalf("resources = %d, want exactly the surviving shared address", resources)
+	}
+	if warnings == 0 {
+		t.Fatalf("warnings = 0, want a warning naming the dropped source")
 	}
 }
 
