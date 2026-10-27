@@ -135,7 +135,7 @@ func logHealth(stderr io.Writer, health collector.Health, resource collector.Res
 	if err != nil {
 		return
 	}
-	fmt.Fprintf(stderr, "collector health: %s\n", line)
+	_, _ = fmt.Fprintf(stderr, "collector health: %s\n", line)
 }
 
 func collectLocalFlags(inputPath, sourceURI, previousDigest string, limits collector.ResourceUse) (sdk.Result, error) {
@@ -332,17 +332,6 @@ func demoClaim() sdk.Claim {
 		Deadline:      now.Add(time.Hour),
 		ConfigHandle:  "component-config:terraform-state",
 	}
-}
-
-func nestedString(config map[string]any, keys ...string) (string, error) {
-	value, present, err := nestedOptionalString(config, keys...)
-	if err != nil {
-		return "", err
-	}
-	if !present {
-		return "", fmt.Errorf("config %q missing", strings.Join(keys, "."))
-	}
-	return value, nil
 }
 
 // nestedOptionalString separates "missing" (present=false, err=nil, caller
