@@ -139,7 +139,7 @@ func logHealth(stderr io.Writer, health collector.Health, resource collector.Res
 }
 
 func collectLocalFlags(inputPath, sourceURI, previousDigest string, limits collector.ResourceUse) (sdk.Result, error) {
-	file, err := os.Open(inputPath)
+	file, err := os.Open(inputPath) // #nosec G304 -- inputPath is the operator --input CLI flag naming a local file, never request-derived
 	if err != nil {
 		return sdk.Result{}, err
 	}

@@ -290,23 +290,29 @@ jobs:
       - name: gosec SARIF
         # -no-fail: gosec's bundled type-checker cannot fully load Go 1.26
         # generics and exits non-zero even with zero findings; the finding
-        # count below is the gate. Findings stay advisory until the
-        # false-positive rate here is measured, then this becomes blocking.
+        # count below is the gate. Blocking on PR/push: the false-positive
+        # rate here is measured (2 G304 sites triaged per-site, count 0).
         run: |
           go install github.com/securego/gosec/v2/cmd/gosec@v2.30.0
           "$(go env GOPATH)/bin/gosec" -no-fail -fmt=sarif -out=gosec.sarif ./...
       - name: upload SARIF
-        # continue-on-error: fork PRs cannot write code-scanning results;
-        # the lanes must still run for them on a read-only token.
+        # Non-PR events only: fork PRs cannot write code-scanning results,
+        # and continue-on-error would turn a 403 into a silent green no-op.
+        # The scan step above needs contents:read alone, so PR lanes still
+        # run for forks on a read-only token.
+        if: github.event_name != 'pull_request'
         uses: github/codeql-action/upload-sarif@8498dc4c2b27cdd99baf0f87955b29ebbf30c78d # v4.39.1
         with:
           sarif_file: gosec.sarif
         continue-on-error: true
-      - name: finding count (advisory)
+      - name: finding count (blocking on PR/push, summary-only on schedule)
         run: |
           n=$(jq '[.runs[].results[]] | length' gosec.sarif)
-          echo "## gosec findings: $n (advisory)" >> "$GITHUB_STEP_SUMMARY"
-          echo "gosec findings: $n (advisory until the false-positive rate is measured)"
+          echo "## gosec findings: $n" >> "$GITHUB_STEP_SUMMARY"
+          echo "gosec findings: $n"
+          if [ "${{ github.event_name }}" != "schedule" ] && [ "$n" -gt 0 ]; then
+            echo "FAIL: gosec reported $n findings; triage in the open with per-site #nosec reasons, never blanket-exclude."; exit 1
+          fi
       - name: file or update findings issue (scheduled runs)
         if: failure() && github.event_name == 'schedule'
         env:
@@ -342,8 +348,13 @@ jobs:
         run: |
           python3 - <<'EOF'
           import json, os
+          # NEEDS_JSON is toJSON(needs): {job: {"result": ..., "outputs": ...}}.
+          # Compare v["result"]: comparing whole job OBJECTS never matches
+          # (false-green), and needs.*.result is a bare ARRAY that kills
+          # green runs. Proven by the security-alerts pilot seed matrix.
           needs = json.loads(os.environ["NEEDS_JSON"])
-          bad = {k: v for k, v in needs.items() if v in ("failure", "cancelled")}
+          bad = {k: v.get("result") for k, v in needs.items()
+                 if isinstance(v, dict) and v.get("result") in ("failure", "cancelled")}
           if bad:
               print("FAIL:", bad)
               raise SystemExit(1)
