@@ -4,10 +4,12 @@
 package collector
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -48,12 +50,14 @@ type liveStateResource struct {
 // construction.
 func ReportForState(locator string, body []byte) (Report, error) {
 	var document struct {
+		Serial    int64               `json:"serial"`
+		Lineage   string              `json:"lineage"`
 		Resources []liveStateResource `json:"resources"`
 	}
 	if err := json.Unmarshal(body, &document); err != nil {
 		return Report{}, fmt.Errorf("decode state document: %w", err)
 	}
-	report := Report{GeneratedAt: time.Now().UTC(), Source: locator}
+	report := Report{GeneratedAt: time.Now().UTC(), Source: locator, Serial: document.Serial, Lineage: document.Lineage}
 	for _, resource := range document.Resources {
 		address := liveResourceAddress(resource)
 		if address == "" {
@@ -109,6 +113,13 @@ func CollectLive(ctx context.Context, claim sdk.Claim, live LiveConfig, reader S
 	if err != nil {
 		return sdk.Result{}, err
 	}
+	// S3 listings arrive in bucket order, which is not a stable contract.
+	// Sort by candidate identity so per-state collection — and the
+	// first-seen winner in mergeLiveResults — is deterministic across
+	// retries of the same claim.
+	sort.Slice(candidates, func(i, j int) bool {
+		return liveCandidateKey(candidates[i]) < liveCandidateKey(candidates[j])
+	})
 	if len(candidates) == 0 {
 		return Collect(claim, Report{GeneratedAt: observedAt, Source: liveEmptySourceURI}, CollectOptions{
 			ObservedAt:     observedAt,
@@ -264,6 +275,7 @@ func mergeLiveResults(results []sdk.Result, claim sdk.Claim, observedAt time.Tim
 		Claim:           claim,
 		Generation:      sdk.Generation{ID: claim.GenerationID, ObservedAt: observedAt},
 	}
+	hints := make([]string, 0, len(results))
 	rank := map[sdk.ResultState]int{
 		sdk.ResultUnchanged: 0,
 		sdk.ResultComplete:  1,
@@ -277,14 +289,181 @@ func mergeLiveResults(results []sdk.Result, claim sdk.Claim, observedAt time.Tim
 		if rank[result.State] > rank[merged.State] {
 			merged.State = result.State
 		}
-		if result.Generation.FreshnessHint != "" && merged.Generation.FreshnessHint == "" {
-			merged.Generation.FreshnessHint = result.Generation.FreshnessHint
+		if hint := strings.TrimSpace(result.Generation.FreshnessHint); hint != "" {
+			duplicate := false
+			for _, seen := range hints {
+				if seen == hint {
+					duplicate = true
+					break
+				}
+			}
+			if !duplicate {
+				hints = append(hints, hint)
+			}
 		}
 	}
-	// A freshness hint only describes an unchanged claim: emitting facts
-	// alongside one would contradict the result state.
-	if merged.State != sdk.ResultUnchanged {
-		merged.Generation.FreshnessHint = ""
+	merged.Generation.FreshnessHint = combineFreshnessHints(hints, merged.State)
+	if merged.State == sdk.ResultTerminal || merged.State == sdk.ResultRetryable {
+		// Terminal and retryable results must not include facts, and
+		// their failure statuses carry the retry/budget signal the host
+		// acts on. A higher-severity candidate never merges facts from
+		// complete siblings: keep the first winner at the merged
+		// severity (candidates arrive in locator order, so this is
+		// deterministic) with its failure statuses intact.
+		for _, result := range results {
+			if result.State == merged.State {
+				merged.Facts = nil
+				merged.Statuses = result.Statuses
+				merged.Generation.FreshnessHint = ""
+				return merged
+			}
+		}
 	}
+	merged.Facts, merged.Statuses, merged.State = dedupeMergedFacts(merged.Facts, merged.Statuses, merged.State, claim, observedAt)
 	return merged
+}
+
+// combineFreshnessHints folds per-candidate generation hints into the merged
+// generation hint. One distinct hint passes through untouched, so
+// single-state claims keep the in-tree `lineage=<uuid> serial=<n>` shape.
+// Several states join in candidate (locator) order. The `unchanged-digest`
+// token only describes an unchanged claim: emitting facts alongside one
+// would contradict the result state, so a merged result that commits facts
+// drops it in favor of the identity hints.
+func combineFreshnessHints(hints []string, state sdk.ResultState) string {
+	if state == sdk.ResultUnchanged {
+		return strings.Join(hints, " ")
+	}
+	kept := make([]string, 0, len(hints))
+	for _, hint := range hints {
+		if hint != "unchanged-digest" {
+			kept = append(kept, hint)
+		}
+	}
+	return strings.Join(kept, " ")
+}
+
+// dedupeMergedFacts collapses facts sharing one (kind, stable key) across
+// state candidates. The host rejects any repeated stable key with
+// invalid_result (eshu-hq/eshu#8868), and a bucket listing fans one claim
+// out over every state in the bucket, so bare addresses that recur across
+// states — such as a data-read default VPC — would otherwise fail the whole
+// claim terminal and darken every state. Candidates arrive in locator
+// order (CollectLive sorts them), so the surviving fact is deterministic
+// across retries of the same claim: identical payloads collapse silently,
+// while a genuine payload conflict keeps the first source and records the
+// dropped sources as a warning fact. A conflict upgrades a complete merge
+// to partial; it never demotes a higher-severity outcome (terminal and
+// retryable merges return factless before this function runs). Without any
+// repeat the inputs pass through untouched, so single-state results keep
+// their exact shape and statuses.
+func dedupeMergedFacts(facts []sdk.Fact, statuses []sdk.Status, state sdk.ResultState, claim sdk.Claim, observedAt time.Time) ([]sdk.Fact, []sdk.Status, sdk.ResultState) {
+	order := make([]string, 0, len(facts))
+	groups := make(map[string][]sdk.Fact, len(facts))
+	for _, fact := range facts {
+		key := string(fact.Kind) + "\x00" + fact.StableKey
+		if _, ok := groups[key]; !ok {
+			order = append(order, key)
+		}
+		groups[key] = append(groups[key], fact)
+	}
+	kept := make([]sdk.Fact, 0, len(facts))
+	conflicts := 0
+	for _, key := range order {
+		group := groups[key]
+		kept = append(kept, group[0])
+		dropped := make([]string, 0, len(group)-1)
+		for _, dup := range group[1:] {
+			if factPayloadEqual(group[0].Payload, dup.Payload) {
+				continue
+			}
+			dropped = append(dropped, dup.SourceRef.URI)
+		}
+		if len(dropped) > 0 {
+			conflicts++
+			kept = append(kept, duplicateConflictWarning(claim, observedAt, group[0], dropped))
+		}
+	}
+	if conflicts == 0 && len(kept) == len(facts) {
+		return facts, statuses, state
+	}
+	// The host rejects partial results without a partial/warning status
+	// and terminal/retryable results without a failure status, and it
+	// rejects facts on terminal/retryable results outright. Terminal and
+	// retryable merges never reach this function (mergeLiveResults returns
+	// the factless winner first), so the rebuilt statuses only ever
+	// describe fact-bearing complete or partial outcomes: a single entry
+	// with true counts that preserves the severity signal.
+	if state != sdk.ResultComplete && state != sdk.ResultPartial {
+		return facts, statuses, state
+	}
+	outcomeState := state
+	outcome := sdk.Status{
+		Class:     sdk.StatusComplete,
+		FactCount: len(kept),
+	}
+	if conflicts > 0 && (state == sdk.ResultComplete || state == sdk.ResultUnchanged) {
+		outcomeState = sdk.ResultPartial
+	}
+	if outcomeState == sdk.ResultPartial {
+		outcome.Class = sdk.StatusWarning
+		outcome.Partial = true
+		outcome.WarningCount = countKind(kept, FactKindStateWarning)
+	}
+	return kept, []sdk.Status{outcome}, outcomeState
+}
+
+// countKind counts merged facts of one kind, so rebuilt statuses carry true
+// counts after the dedupe shortens the fact list.
+func countKind(facts []sdk.Fact, kind string) int {
+	count := 0
+	for _, fact := range facts {
+		if fact.Kind == kind {
+			count++
+		}
+	}
+	return count
+}
+
+// factPayloadEqual compares fact payloads by canonical JSON encoding.
+// encoding/json sorts map keys, so semantically identical payloads compare
+// equal regardless of insertion order.
+func factPayloadEqual(left, right map[string]any) bool {
+	leftBytes, leftErr := json.Marshal(left)
+	rightBytes, rightErr := json.Marshal(right)
+	if leftErr != nil || rightErr != nil {
+		return false
+	}
+	return bytes.Equal(leftBytes, rightBytes)
+}
+
+// duplicateConflictWarning records the dropped duplicate sources for one
+// conflicting stable key as a single warning fact. The key carries the
+// conflicting stable key so one warning exists per ambiguity, and the
+// payload names the surviving and dropped sources so an operator can tell
+// which states lost.
+func duplicateConflictWarning(claim sdk.Claim, observedAt time.Time, kept sdk.Fact, dropped []string) sdk.Fact {
+	key := "warning:duplicate:" + string(kept.Kind) + ":" + kept.StableKey
+	payload := map[string]any{
+		"reason":          "duplicate-stable-key",
+		"stable_key":      kept.StableKey,
+		"kept_source":     kept.SourceRef.URI,
+		"dropped_sources": dropped,
+	}
+	return sdk.Fact{
+		Kind:             FactKindStateWarning,
+		SchemaVersion:    "1.0.0",
+		StableKey:        key,
+		SourceConfidence: sdk.SourceConfidenceObserved,
+		ObservedAt:       observedAt,
+		SourceRef: sdk.SourceRef{
+			SourceSystem: SourceSystem,
+			ScopeID:      claim.Scope.ID,
+			GenerationID: claim.GenerationID,
+			FactKey:      key,
+			URI:          kept.SourceRef.URI + "#duplicate",
+			RecordID:     "duplicate",
+		},
+		Payload: payload,
+	}
 }
