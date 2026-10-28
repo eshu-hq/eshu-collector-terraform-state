@@ -111,7 +111,7 @@ func (provider *credentialProvider) assumeRoleWithWebIdentity(roleARN, tokenFile
 	if getenv == nil {
 		getenv = func(string) string { return "" }
 	}
-	raw, err := os.ReadFile(tokenFile)
+	raw, err := os.ReadFile(tokenFile) // #nosec G304 -- tokenFile is the operator-set AWS_WEB_IDENTITY_TOKEN_FILE env (kubelet-projected IRSA path), never request-derived
 	if err != nil {
 		return awsCredentials{}, fmt.Errorf("read web identity token file: %w", err)
 	}
