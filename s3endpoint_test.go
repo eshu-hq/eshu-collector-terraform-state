@@ -52,22 +52,23 @@ func TestResolveS3EndpointRejectsUntrusted(t *testing.T) {
 	t.Parallel()
 
 	rejected := map[string]string{
-		"other scheme":       "ftp://localhost:9000/state",
-		"missing scheme":     "localhost:9000/state",
-		"userinfo":           "https://user:secret@localhost:9000/state",
-		"bare userinfo":      "https://user@localhost:9000/",
-		"metadata IPv4":      "http://169.254.169.254/latest/",
-		"metadata HTTPS":     "https://169.254.169.254/latest/",
-		"link-local sibling": "http://169.254.169.253/",
-		"link-local general": "http://169.254.10.20/",
-		"gcp metadata":       "http://metadata.google.internal/",
-		"query smuggling":    "http://localhost:9000/state?x=1",
-		"fragment smuggling": "http://localhost:9000/state#x",
-		"http off loopback":  "http://minio.internal:9000/state",
-		"http private LAN":   "http://192.168.1.10:9000/state",
-		"empty host":         "https:///state",
-		"credential query":   "http://localhost:9000/state?token=abc",
-		"at-sign in path":    "http://localhost:9000/a@b",
+		"other scheme":          "ftp://localhost:9000/state",
+		"missing scheme":        "localhost:9000/state",
+		"userinfo":              "https://user:secret@localhost:9000/state",
+		"bare userinfo":         "https://user@localhost:9000/",
+		"metadata IPv4":         "http://169.254.169.254/latest/",
+		"metadata HTTPS":        "https://169.254.169.254/latest/",
+		"link-local sibling":    "http://169.254.169.253/",
+		"link-local general":    "http://169.254.10.20/",
+		"gcp metadata":          "http://metadata.google.internal/",
+		"query smuggling":       "http://localhost:9000/state?x=1",
+		"fragment smuggling":    "http://localhost:9000/state#x",
+		"http off loopback":     "http://minio.internal:9000/state",
+		"http private LAN":      "http://192.168.1.10:9000/state",
+		"single-label metadata": "http://instance-data/latest/",
+		"empty host":            "https:///state",
+		"credential query":      "http://localhost:9000/state?token=abc",
+		"at-sign in path":       "http://localhost:9000/a@b",
 	}
 	for name, value := range rejected {
 		getenv := func(string) string { return value }
@@ -75,6 +76,24 @@ func TestResolveS3EndpointRejectsUntrusted(t *testing.T) {
 			t.Errorf("ResolveS3Endpoint(%q) = %q, want rejection (%s)", value, base, name)
 		} else if strings.Contains(err.Error(), value) && strings.Contains(value, "secret") {
 			t.Errorf("ResolveS3Endpoint(%q) error echoes credentials: %v", value, err)
+		}
+	}
+}
+
+// TestResolveS3EndpointAcceptsSingleLabelInClusterHTTP proves the tier2
+// harness shape stays green: http to a single-label compose/cluster DNS
+// name (http://minio:9000) resolves only inside the operator's own network,
+// so the S3 surface accepts it while STS and dotted/private http stay shut.
+func TestResolveS3EndpointAcceptsSingleLabelInClusterHTTP(t *testing.T) {
+	t.Parallel()
+
+	for _, value := range []string{
+		"http://minio:9000",
+		"http://minio:9000/state/",
+	} {
+		getenv := func(string) string { return value }
+		if _, err := ResolveS3Endpoint(getenv); err != nil {
+			t.Errorf("ResolveS3Endpoint(%q) error = %v, want acceptance", value, err)
 		}
 	}
 }
@@ -196,6 +215,28 @@ func TestNewHTTPS3ReaderDefaultKeepsVirtualHosted(t *testing.T) {
 // TestSTSEndpointTrustParity proves AWS_STS_ENDPOINT carries the same
 // trust gate as the S3 surface: the metadata service is refused while a
 // loopback httptest endpoint (the offline/IRSA-test shape) still works.
+// TestSTSEndpointRejectsSingleLabelHTTP proves the STS surface stays
+// strict where the S3 surface allows in-cluster http: the web-identity
+// exchange carries a bearer token, so http://minio:9000 fails closed for
+// STS even though the S3 reader accepts it.
+func TestSTSEndpointRejectsSingleLabelHTTP(t *testing.T) {
+	t.Parallel()
+
+	tokenFile := t.TempDir() + "/token"
+	if err := os.WriteFile(tokenFile, []byte("token-123\n"), 0o600); err != nil {
+		t.Fatalf("os.WriteFile error = %v", err)
+	}
+	env := map[string]string{
+		"AWS_ROLE_ARN":                "arn:aws:iam::123:role/eshu",
+		"AWS_WEB_IDENTITY_TOKEN_FILE": tokenFile,
+		"AWS_STS_ENDPOINT":            "http://minio:9000/",
+	}
+	provider := &credentialProvider{getenv: func(key string) string { return env[key] }}
+	if _, err := provider.forRegion("us-east-1"); err == nil || !strings.Contains(err.Error(), "AWS_STS_ENDPOINT") {
+		t.Fatalf("forRegion(single-label http STS) error = %v, want the endpoint trust failure", err)
+	}
+}
+
 func TestSTSEndpointTrustParity(t *testing.T) {
 	t.Parallel()
 

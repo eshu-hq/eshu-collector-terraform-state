@@ -29,9 +29,11 @@ config:
   # AWS endpoints with virtual-hosted addressing. The value must be an
   # http(s) base URL with no credentials, query, or fragment; instance
   # metadata destinations (169.254.0.0/16, the metadata hostnames) are
-  # refused, and plain http is accepted only on loopback. See README
+  # refused, and plain http is accepted only on loopback plus single-label
+  # in-cluster DNS names (e.g. a compose service name). See README
   # ("S3 endpoint override") for the full trust posture. AWS_STS_ENDPOINT
-  # carries the same gate for the IRSA exchange.
+  # carries the same gate for the IRSA exchange, without the single-label
+  # allowance.
   #   AWS_S3_ENDPOINT=http://localhost:9000
   # discovery:
   #   backend_filters:

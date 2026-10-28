@@ -42,7 +42,9 @@ func ResolveS3Endpoint(getenv func(string) string) (string, error) {
 	if raw == "" {
 		return "", nil
 	}
-	return validateEndpointTrust(raw)
+	// S3 allows single-label http for in-cluster storage (compose/cluster
+	// DNS) per the #9288 arbiter ruling; STS stays strict in s3auth.go.
+	return validateEndpointTrust(raw, true)
 }
 
 // validateEndpointTrust enforces the operator endpoint posture shared by
@@ -55,15 +57,26 @@ func ResolveS3Endpoint(getenv func(string) string) (string, error) {
 //     value stays a base URL and cannot smuggle selectors or tokens;
 //   - instance-metadata destinations are refused in every scheme: IPv4
 //     link-local (169.254.0.0/16, the cloud metadata range), IPv6
-//     link-local, and the well-known metadata hostnames;
-//   - http is confined to loopback (localhost, 127.0.0.0/8, ::1) for
-//     offline/MinIO development; every non-loopback host requires https,
+//     link-local, and the well-known metadata hostnames (including the
+//     single-label "instance-data");
+//   - http is confined to loopback (localhost, 127.0.0.0/8, ::1), plus,
+//     when allowSingleLabelHTTP is set, single-label DNS names (no dots,
+//     not an IP literal, e.g. a compose service name like "minio") for
+//     in-cluster S3-compatible storage; every other host requires https,
 //     so production traffic is never downgraded to cleartext by config.
+//     STS always passes allowSingleLabelHTTP=false: the web-identity
+//     exchange posts token file content, so only loopback http stays open
+//     there (offline tests), never in-cluster names.
+//
+// Single-label names resolve only inside the operator's own compose or
+// cluster DNS; the residual risk (search-domain misresolution) sits in the
+// same trust plane as setting the env var. Dotted names and IP literals
+// never take the single-label path.
 //
 // The returned base keeps any operator path prefix with cosmetic trailing
 // slashes trimmed. Error text never echoes the value: an endpoint can name
 // internal topology.
-func validateEndpointTrust(raw string) (string, error) {
+func validateEndpointTrust(raw string, allowSingleLabelHTTP bool) (string, error) {
 	trimmed := strings.TrimSpace(raw)
 	if trimmed == "" {
 		return "", fmt.Errorf("endpoint must not be blank")
@@ -81,7 +94,9 @@ func validateEndpointTrust(raw string) (string, error) {
 	switch scheme := strings.ToLower(parsed.Scheme); scheme {
 	case "https":
 	case "http":
-		if !isLoopbackHost(parsed.Hostname()) {
+		httpOK := isLoopbackHost(parsed.Hostname()) ||
+			(allowSingleLabelHTTP && isSingleLabelHost(parsed.Hostname()))
+		if !httpOK {
 			return "", fmt.Errorf("http endpoints are allowed only on loopback")
 		}
 	default:
@@ -118,6 +133,19 @@ func isLoopbackHost(host string) bool {
 		return ip.IsLoopback()
 	}
 	return false
+}
+
+// isSingleLabelHost reports whether a URL hostname is a bare DNS label:
+// not an IP literal and containing no dots, e.g. a compose service name.
+// Callers gate http on this only where the arbiter ruling allows
+// in-cluster cleartext (S3, never STS); the metadata denylist applies after
+// this check, so single-label metadata names still fail closed.
+func isSingleLabelHost(host string) bool {
+	trimmed := strings.ToLower(strings.TrimSuffix(strings.TrimSpace(host), "."))
+	if trimmed == "" || net.ParseIP(trimmed) != nil {
+		return false
+	}
+	return !strings.Contains(trimmed, ".")
 }
 
 // NewHTTPS3Reader builds the live-path S3 reader: ambient workload

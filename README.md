@@ -102,11 +102,14 @@ Endpoint contract:
 - Cosmetic trailing slashes are trimmed; an operator path prefix is kept.
 
 Trust posture (enforced by `validateEndpointTrust`, shared with the
-`AWS_STS_ENDPOINT` IRSA override so both surfaces match):
+`AWS_STS_ENDPOINT` IRSA override; STS never takes the single-label
+allowance below):
 
-- Scheme must be `http` or `https`. Plain `http` is accepted only on
-  loopback (`localhost`, `127.0.0.0/8`, `::1`) for offline development;
-  every other host requires `https`.
+- Scheme must be `http` or `https`. Plain `http` is accepted on loopback
+  (`localhost`, `127.0.0.0/8`, `::1`) for offline development, and — S3
+  only — on single-label DNS names (no dots, not an IP, e.g.
+  `http://minio:9000`) that resolve inside the operator's own compose or
+  cluster network; every other host requires `https`.
 - No credentials: any `@` (userinfo) is refused, as are query strings and
   fragments.
 - No instance metadata: `169.254.0.0/16`, IPv6 link-local, and the

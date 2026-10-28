@@ -139,7 +139,10 @@ func (provider *credentialProvider) assumeRoleWithWebIdentity(roleARN, tokenFile
 	endpoint := strings.TrimSpace(getenv("AWS_STS_ENDPOINT"))
 	if endpoint == "" {
 		endpoint = "https://sts." + stsRegion + ".amazonaws.com/"
-	} else if trusted, err := validateEndpointTrust(endpoint); err != nil {
+	} else if trusted, err := validateEndpointTrust(endpoint, false); err != nil {
+		// STS never allows single-label http (false above): the
+		// web-identity exchange carries token content, so only
+		// loopback http stays open for offline tests.
 		return awsCredentials{}, fmt.Errorf("AWS_STS_ENDPOINT is not a trusted endpoint: %w", err)
 	} else {
 		endpoint = trusted
