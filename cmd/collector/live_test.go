@@ -84,8 +84,8 @@ func (stub stubLiveReader) ListKeys(_ context.Context, _, _, _ string) ([]string
 // failure. It is not parallel: it swaps the process-wide reader factory.
 func TestRunSDKStdioLiveClaimCollects(t *testing.T) {
 	previous := liveReaderFactory
-	liveReaderFactory = func() collector.SourceReader {
-		return stubLiveReader{body: []byte(`{"resources": [{"mode": "managed", "type": "aws_s3_bucket", "name": "one", "instances": [{}]}]}`)}
+	liveReaderFactory = func() (collector.SourceReader, error) {
+		return stubLiveReader{body: []byte(`{"resources": [{"mode": "managed", "type": "aws_s3_bucket", "name": "one", "instances": [{}]}]}`)}, nil
 	}
 	defer func() { liveReaderFactory = previous }()
 

@@ -14,9 +14,10 @@ spec:
     sdkProtocol: collector-sdk/v1alpha1
     adapter: process
   artifacts:
-    # Pinned 0.1.0 linux/amd64 image via scripts/pin-digest.sh.
+    # Pinned 0.1.0 linux/amd64 image via scripts/pin-digest.sh
+    # (tag 0.1.0-9288-endpoint: S3 endpoint override lane).
     - platform: linux/amd64
-      image: ghcr.io/eshu-hq/eshu-collector-terraform-state@sha256:ae5bfbc85790360a2837886a3c5157b03448d3cc4358a2134f0e2a51f22170f6
+      image: ghcr.io/eshu-hq/eshu-collector-terraform-state@sha256:19ae555b101cfab7882c257a65c247d80f3689a1d1ca3b02da21c64bf019eb27
   emittedFacts:
     - kind: terraform_state_snapshot
       schemaVersions:

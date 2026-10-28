@@ -22,6 +22,17 @@ config:
   # The collector resolves bucket filters/seeds to exact S3 objects and
   # reads with ambient workload credentials only (IRSA web identity, then
   # the process environment triple). No credential key exists in config.
+  #
+  # S3-compatible endpoint override (MinIO / offline): set AWS_S3_ENDPOINT
+  # on the collector process to a trusted base URL and every live S3 read
+  # addresses it path-style (base/bucket/key). Unset keeps the regional
+  # AWS endpoints with virtual-hosted addressing. The value must be an
+  # http(s) base URL with no credentials, query, or fragment; instance
+  # metadata destinations (169.254.0.0/16, the metadata hostnames) are
+  # refused, and plain http is accepted only on loopback. See README
+  # ("S3 endpoint override") for the full trust posture. AWS_STS_ENDPOINT
+  # carries the same gate for the IRSA exchange.
+  #   AWS_S3_ENDPOINT=http://localhost:9000
   # discovery:
   #   backend_filters:
   #     - target_scope_id: ops-qa-aws
