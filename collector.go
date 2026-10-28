@@ -223,9 +223,17 @@ func Collect(claim sdk.Claim, report Report, opts CollectOptions) (sdk.Result, e
 			continue
 		}
 		seen[key] = true
+		// address mirrors the in-tree parser resource payload contract
+		// (identity.go resourceAddress synthesizes type.name when the
+		// state entry carries no explicit address): the host drift
+		// evidence loader scans payload->>'address' into a NOT NULL
+		// column, and a resource fact without it dead-letters its
+		// scope's config_state_drift intent. The record ID already is
+		// that address (liveResourceAddress), so it rides under both keys.
 		payload := map[string]any{
-			"id":   record.ID,
-			"name": record.Name,
+			"id":      record.ID,
+			"name":    record.Name,
+			"address": record.ID,
 		}
 		if record.Detail != "" {
 			payload["detail"] = record.Detail

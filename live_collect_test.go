@@ -434,3 +434,38 @@ func TestCollectLiveSnapshotPayloadCarriesSerialAndLineage(t *testing.T) {
 		t.Fatalf("snapshot payload serial = %#v, want int64(11)", serial)
 	}
 }
+
+// TestCollectLiveResourcePayloadCarriesAddress proves each resource fact
+// carries the in-tree payload address key: the host drift loader scans
+// payload->>'address' into a NOT NULL column, so a fact without it
+// dead-letters its scope's config_state_drift intent.
+func TestCollectLiveResourcePayloadCarriesAddress(t *testing.T) {
+	t.Parallel()
+
+	live, err := ParseLiveConfig(opsQALiveConfig())
+	if err != nil {
+		t.Fatalf("ParseLiveConfig error = %v", err)
+	}
+	state := `{"serial": 11, "lineage": "lin-payload", "resources": [{"mode": "managed", "type": "aws_s3_bucket", "name": "one", "instances": [{}]}]}`
+	reader := &fakeLiveReader{
+		objects: map[string][]byte{"bg-ops-qa-terraform-state/env/terraform.tfstate": []byte(state)},
+		lists:   map[string][]string{"bg-ops-qa-terraform-state/": {"env/terraform.tfstate"}},
+	}
+	result, err := CollectLive(context.Background(), liveTestClaim(), live, reader, CollectOptions{ObservedAt: time.Now().UTC()})
+	if err != nil {
+		t.Fatalf("CollectLive error = %v", err)
+	}
+	found := false
+	for _, fact := range result.Facts {
+		if fact.Kind != FactKindStateResource {
+			continue
+		}
+		found = true
+		if got := fact.Payload["address"]; got != "aws_s3_bucket.one" {
+			t.Fatalf("resource payload address = %#v, want %q", got, "aws_s3_bucket.one")
+		}
+	}
+	if !found {
+		t.Fatalf("no %q fact in %+v", FactKindStateResource, result.Facts)
+	}
+}
