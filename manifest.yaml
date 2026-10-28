@@ -15,9 +15,10 @@ spec:
     adapter: process
   artifacts:
     # Pinned 0.1.0 linux/amd64 image via scripts/pin-digest.sh
-    # (tag 0.1.0-9288-endpoint: S3 endpoint override lane).
+    # (tag 0.1.0-9288-endpoint.2: S3 endpoint override lane with the
+    # single-label in-cluster http amendment).
     - platform: linux/amd64
-      image: ghcr.io/eshu-hq/eshu-collector-terraform-state@sha256:19ae555b101cfab7882c257a65c247d80f3689a1d1ca3b02da21c64bf019eb27
+      image: ghcr.io/eshu-hq/eshu-collector-terraform-state@sha256:36b51cee5abe3f7734cbcaeb79a005165a3a9694bd3a62a562799668583dd8e9
   emittedFacts:
     - kind: terraform_state_snapshot
       schemaVersions:
