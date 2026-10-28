@@ -392,3 +392,45 @@ func TestCollectLiveFailsClosedWithoutReaderOrDiscovery(t *testing.T) {
 		t.Fatal("CollectLive(empty config) error = nil, want failure")
 	}
 }
+
+// TestCollectLiveSnapshotPayloadCarriesSerialAndLineage proves the snapshot
+// fact payload preserves the state identity the host drift loader reads:
+// eshu's drift evidence query selects payload->>'lineage' and
+// payload->>'serial' from terraform_state_snapshot facts, so a snapshot
+// without them dead-letters every config_state_drift intent for its scope.
+func TestCollectLiveSnapshotPayloadCarriesSerialAndLineage(t *testing.T) {
+	t.Parallel()
+
+	live, err := ParseLiveConfig(opsQALiveConfig())
+	if err != nil {
+		t.Fatalf("ParseLiveConfig error = %v", err)
+	}
+	state := `{"serial": 11, "lineage": "lin-payload", "resources": [{"mode": "managed", "type": "aws_s3_bucket", "name": "one", "instances": [{}]}]}`
+	reader := &fakeLiveReader{
+		objects: map[string][]byte{"bg-ops-qa-terraform-state/env/terraform.tfstate": []byte(state)},
+		lists:   map[string][]string{"bg-ops-qa-terraform-state/": {"env/terraform.tfstate"}},
+	}
+	result, err := CollectLive(context.Background(), liveTestClaim(), live, reader, CollectOptions{ObservedAt: time.Now().UTC()})
+	if err != nil {
+		t.Fatalf("CollectLive error = %v", err)
+	}
+	var snapshot *sdk.Fact
+	for i, fact := range result.Facts {
+		if fact.Kind == FactKindStateSnapshot {
+			snapshot = &result.Facts[i]
+		}
+	}
+	if snapshot == nil {
+		t.Fatalf("no %q fact in %+v", FactKindStateSnapshot, result.Facts)
+	}
+	if got := snapshot.Payload["lineage"]; got != "lin-payload" {
+		t.Fatalf("snapshot payload lineage = %#v, want %q", got, "lin-payload")
+	}
+	serial, ok := snapshot.Payload["serial"]
+	if !ok {
+		t.Fatalf("snapshot payload has no serial key: %#v", snapshot.Payload)
+	}
+	if got, ok := serial.(int64); !ok || got != 11 {
+		t.Fatalf("snapshot payload serial = %#v, want int64(11)", serial)
+	}
+}

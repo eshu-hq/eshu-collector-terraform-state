@@ -259,7 +259,18 @@ func Collect(claim sdk.Claim, report Report, opts CollectOptions) (sdk.Result, e
 			Redactions: factRedactions,
 		})
 	}
-	snapshotPayload := map[string]any{"source": report.Source, "record_count": len(seen)}
+	// serial and lineage stay in the snapshot payload, not just the
+	// generation freshness hint: the host drift evidence loader selects
+	// payload->>'lineage' and payload->>'serial' from
+	// terraform_state_snapshot facts, and a snapshot without them
+	// dead-letters its scope's config_state_drift intent. This mirrors
+	// the in-tree parser snapshotFact payload contract.
+	snapshotPayload := map[string]any{
+		"source":       report.Source,
+		"record_count": len(seen),
+		"serial":       report.Serial,
+		"lineage":      report.Lineage,
+	}
 	if encoded, err := json.Marshal(snapshotPayload); err != nil || len(encoded) > limits.MaxPayloadBytes {
 		return terminalResult(claim, observedAt, "payload-budget-exceeded"), nil
 	}
