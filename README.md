@@ -84,6 +84,39 @@ existing `Collect` contract. Missing objects degrade to partial with a
 `state-missing` warning, throttles release the claim retryable, and a wrong
 bucket fails the claim closed.
 
+### S3 endpoint override (MinIO / offline)
+
+Set `AWS_S3_ENDPOINT` on the collector process to point live S3 reads at an
+S3-compatible endpoint (MinIO, an offline mirror, a VPC endpoint) instead of
+the regional AWS endpoints. Unset or blank keeps the AWS default. The live
+reader is built with `NewHTTPS3Reader`, so the override flows through the
+real claim path, and a misconfigured value fails the claim closed at reader
+construction instead of misdirecting signed reads.
+
+Endpoint contract:
+
+- The value is a base URL; requests address it path-style as
+  `<base>/<bucket>/<key>` (ListObjectsV2 as `<base>/<bucket>`). The AWS
+  default instead uses virtual-hosted addressing (`<bucket>.s3.<region>…`),
+  with dotted buckets falling back to path style so TLS never breaks.
+- Cosmetic trailing slashes are trimmed; an operator path prefix is kept.
+
+Trust posture (enforced by `validateEndpointTrust`, shared with the
+`AWS_STS_ENDPOINT` IRSA override; STS never takes the single-label
+allowance below):
+
+- Scheme must be `http` or `https`. Plain `http` is accepted on loopback
+  (`localhost`, `127.0.0.0/8`, `::1`) for offline development, and — S3
+  only — on single-label DNS names (no dots, not an IP, e.g.
+  `http://minio:9000`) that resolve inside the operator's own compose or
+  cluster network; every other host requires `https`.
+- No credentials: any `@` (userinfo) is refused, as are query strings and
+  fragments.
+- No instance metadata: `169.254.0.0/16`, IPv6 link-local, and the
+  well-known metadata hostnames (`metadata.google.internal`,
+  `instance-data`) are refused in every scheme.
+- Error text never echoes the configured value.
+
 ## Least-privilege credentials
 
 The collector receives only a bounded claim plus local config. It never gets
