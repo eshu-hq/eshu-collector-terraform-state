@@ -73,3 +73,4 @@ spec:
         - source_evidence_only:no_graph_truth
   telemetry:
     metricsPrefix: eshu_dp_tfstate_
+# skip-proof: fixture-only lane-selection probe, no semantic change
