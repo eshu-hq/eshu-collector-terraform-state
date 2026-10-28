@@ -78,8 +78,10 @@ Without `source.input`, a `discovery` plus `target_scopes` activation takes
 the live path: bucket filters and seeds resolve to exact S3 state objects,
 target-scope allowlists bind each candidate, and reads use ambient workload
 credentials only (IRSA web identity, then the process environment triple —
-no credential key exists in config). Each fetched state emits identity-only
-facts (resource address, type, mode; never attribute values) through the
+no credential key exists in config). Each fetched state emits join-key
+facts (resource address, type, mode) plus only contracts-allowlisted drift
+attribute leaves (`tfstatev1.DriftAllowlistFor`, fail-closed; the
+hard-sensitive `aws_iam_policy` document is never emitted) through the
 existing `Collect` contract. Missing objects degrade to partial with a
 `state-missing` warning, throttles release the claim retryable, and a wrong
 bucket fails the claim closed.

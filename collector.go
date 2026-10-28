@@ -75,6 +75,11 @@ type Record struct {
 	ID     string `json:"id"`
 	Name   string `json:"name"`
 	Detail string `json:"detail,omitempty"`
+	// Attributes carries the contracts-allowlisted drift attributes for this
+	// resource, re-nested as pure maps (see driftAttributes). It is omitted
+	// when the resource type is unlisted or denied, or when no allowlisted
+	// leaf is present.
+	Attributes map[string]any `json:"attributes,omitempty"`
 	// Secret is intentionally never emitted: Collect redacts it and records
 	// the redaction instead. Keep a field like this so the redaction path
 	// stays exercised after the scaffold gains the real emitters.
@@ -140,8 +145,10 @@ func LoadReport(r io.Reader) (Report, error) {
 
 // Digest returns the stable identity of one report for freshness/stale proof.
 // It covers every field that changes emitted facts: the source (snapshot
-// payload), each record's emitted fields, and each record's redaction
-// presence, so a stale digest never preserves stale evidence.
+// payload), each record's emitted fields, each record's redaction
+// presence, and each record's allowlisted attributes (encoding/json sorts
+// map keys, so the attributes digest is deterministic), so a stale digest
+// never preserves stale evidence.
 func Digest(report Report) string {
 	ids := make([]string, 0, len(report.Records)+1)
 	ids = append(ids, "source\x00"+report.Source)
@@ -150,7 +157,13 @@ func Digest(report Report) string {
 		if record.Secret != "" {
 			secretPresence = "secret:1"
 		}
-		ids = append(ids, record.ID+"\x00"+record.Name+"\x00"+record.Detail+"\x00"+secretPresence)
+		attributeDigest := ""
+		if record.Attributes != nil {
+			if encoded, err := json.Marshal(record.Attributes); err == nil {
+				attributeDigest = string(encoded)
+			}
+		}
+		ids = append(ids, record.ID+"\x00"+record.Name+"\x00"+record.Detail+"\x00"+secretPresence+"\x00"+attributeDigest)
 	}
 	sort.Strings(ids)
 	sum := sha256.Sum256([]byte(strings.Join(ids, "\x01")))
@@ -234,6 +247,9 @@ func Collect(claim sdk.Claim, report Report, opts CollectOptions) (sdk.Result, e
 			"id":      record.ID,
 			"name":    record.Name,
 			"address": record.ID,
+		}
+		if record.Attributes != nil {
+			payload["attributes"] = record.Attributes
 		}
 		if record.Detail != "" {
 			payload["detail"] = record.Detail
