@@ -44,7 +44,10 @@ concurrency:
 
 jobs:
   changes:
-    if: github.event_name == 'pull_request'
+    # Runs on every event on purpose: on push the filter outputs are unused
+    # (lane conditions short-circuit on event), but every lane `needs` this
+    # job — skipping it on push drags all lanes to skipped and the push run
+    # goes vacantly green (observed on the post-merge main run).
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
