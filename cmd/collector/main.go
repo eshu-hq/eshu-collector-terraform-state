@@ -206,9 +206,13 @@ type stdioPlan struct {
 }
 
 // liveReaderFactory builds the S3 reader for live plans. The default
-// signs with ambient workload credentials; tests substitute a fake.
-var liveReaderFactory = func() collector.SourceReader {
-	return &collector.HTTPS3Reader{Getenv: os.Getenv}
+// honors the AWS_S3_ENDPOINT operator override (MinIO/offline) with the
+// endpoint-trust gate and otherwise signs against the regional endpoints
+// with ambient workload credentials; tests substitute a fake. A
+// misconfigured endpoint fails the claim closed instead of misdirecting
+// signed reads.
+var liveReaderFactory = func() (collector.SourceReader, error) {
+	return collector.NewHTTPS3Reader(os.Getenv, nil)
 }
 
 // parseSDKStdio decodes and validates one collector SDK host request. It
@@ -286,11 +290,15 @@ func parseSDKStdio(stdin io.Reader) (stdioPlan, error) {
 // reads and Collect for live plans.
 func collectStdioPlan(plan stdioPlan) (sdk.Result, error) {
 	if plan.live {
+		reader, err := liveReaderFactory()
+		if err != nil {
+			return sdk.Result{}, err
+		}
 		return collector.CollectLive(
 			context.Background(),
 			plan.claim,
 			plan.liveConfig,
-			liveReaderFactory(),
+			reader,
 			collector.CollectOptions{
 				ObservedAt:     time.Now().UTC(),
 				SourceURI:      plan.sourceURI,

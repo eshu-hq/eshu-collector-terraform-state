@@ -60,8 +60,10 @@ type HTTPS3Reader struct {
 	Getenv func(string) string
 	// HTTPClient performs signed requests; nil selects a bounded default.
 	HTTPClient *http.Client
-	// endpoint overrides the S3 base URL for tests (httptest servers);
-	// nil selects the regional S3 endpoints.
+	// endpoint overrides the S3 base URL per bucket and region: test-only
+	// for httptest servers, and set by NewHTTPS3Reader to the
+	// path-style base/bucket join for operator endpoints; nil selects
+	// the regional S3 endpoints.
 	endpoint func(bucket, region string) string
 
 	mu       sync.Mutex
@@ -118,7 +120,9 @@ func (reader *HTTPS3Reader) credentials(region string) (awsCredentials, error) {
 // breaks TLS. Query parameters carry listing selectors.
 func (reader *HTTPS3Reader) s3RequestURL(bucket, key, region string, query url.Values) string {
 	escaped := strings.TrimPrefix(canonicalV4URI(&url.URL{Path: "/" + key}), "/")
-	target := reader.s3endpoint(bucket, region) + "/" + escaped
+	// A prefix listing addresses the bucket root; trim the cosmetic
+	// trailing slash so ListKeys hits /bucket rather than /bucket/.
+	target := strings.TrimSuffix(reader.s3endpoint(bucket, region)+"/"+escaped, "/")
 	if len(query) > 0 {
 		return target + "?" + encodeV4Query(query)
 	}
