@@ -169,3 +169,5 @@ Then let the coordinator claim a scope and read the committed facts back
 through the target core's own API and MCP surfaces, using the paths in that
 core's API reference. Record the tested core version, topology, and evidence
 location in the cutover issue; credential-free conformance stays in CI.
+
+<!-- skip-proof: docs-only lane-selection probe, no rendered change -->
