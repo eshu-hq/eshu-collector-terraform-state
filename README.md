@@ -82,7 +82,9 @@ no credential key exists in config). Each fetched state emits join-key
 facts (resource address, type, mode) plus only contracts-allowlisted drift
 attribute leaves (`tfstatev1.DriftAllowlistFor`, fail-closed; the
 hard-sensitive `aws_iam_policy` document is never emitted) through the
-existing `Collect` contract. Missing objects degrade to partial with a
+existing `Collect` contract. Multi-instance resources share one stable
+address key, so only the first instance's attributes are emitted; drift on
+later instances of the same resource is invisible. Missing objects degrade to partial with a
 `state-missing` warning, throttles release the claim retryable, and a wrong
 bucket fails the claim closed.
 
