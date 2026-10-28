@@ -21,10 +21,12 @@ const liveStateFixture = `{
 	"outputs": {"db_password": {"value": "hunter3", "sensitive": true}}
 }`
 
-// TestReportForStateEmitsIdentityOnly proves the state projection carries
-// addresses, types, and modes while no attribute or output value (the
-// hunter2/hunter3 markers) reaches any record payload.
-func TestReportForStateEmitsIdentityOnly(t *testing.T) {
+// TestReportForStateEmitsAllowlistOnly proves the state projection carries
+// addresses, types, and modes plus only contracts-allowlisted attribute
+// leaves (here: the s3 acl), while no secret or non-allowlisted value (the
+// hunter2/hunter3/secret_token markers, the bucket name) reaches any record
+// payload.
+func TestReportForStateEmitsAllowlistOnly(t *testing.T) {
 	t.Parallel()
 
 	report, err := ReportForState("s3://b/k", []byte(liveStateFixture))
@@ -38,7 +40,7 @@ func TestReportForStateEmitsIdentityOnly(t *testing.T) {
 	if err != nil {
 		t.Fatalf("json.Marshal error = %v", err)
 	}
-	for _, secret := range []string{"hunter2", "hunter3", "db_password", "secret_token", "private"} {
+	for _, secret := range []string{"hunter2", "hunter3", "db_password", "secret_token", "bg-ops-qa-terraform-state"} {
 		if strings.Contains(string(encoded), secret) {
 			t.Fatalf("record payloads leak %q: %s", secret, encoded)
 		}
@@ -50,6 +52,12 @@ func TestReportForStateEmitsIdentityOnly(t *testing.T) {
 	managed := byID["aws_s3_bucket.state"]
 	if managed.Name != "aws_s3_bucket" || managed.Detail != "managed" {
 		t.Fatalf("managed record = %+v, want type name and managed detail", managed)
+	}
+	if acl, ok := managed.Attributes["acl"]; !ok || acl != "private" {
+		t.Fatalf("managed attributes = %#v, want exactly the allowlisted acl", managed.Attributes)
+	}
+	if len(managed.Attributes) != 1 {
+		t.Fatalf("managed attributes = %#v, want only the acl leaf", managed.Attributes)
 	}
 	data := byID["module.vpc.aws_ami.base"]
 	if data.Name != "aws_ami" || data.Detail != "data" {

@@ -45,9 +45,9 @@ type liveStateResource struct {
 
 // ReportForState builds the placeholder Report for one fetched state
 // document. One record per resource carries its address as the stable ID,
-// its type as the name, and its mode as detail; no attribute value ever
-// enters a payload, so no secret can flow through this path by
-// construction.
+// its type as the name, and its mode as detail; attribute emission is
+// allowlist-only (driftAttributes), so no non-allowlisted value — and no
+// secret — can flow through this path by construction.
 func ReportForState(locator string, body []byte) (Report, error) {
 	var document struct {
 		Serial    int64               `json:"serial"`
@@ -68,9 +68,10 @@ func ReportForState(locator string, body []byte) (Report, error) {
 			detail = "managed"
 		}
 		report.Records = append(report.Records, Record{
-			ID:     address,
-			Name:   strings.TrimSpace(resource.Type),
-			Detail: detail,
+			ID:         address,
+			Name:       strings.TrimSpace(resource.Type),
+			Detail:     detail,
+			Attributes: driftAttributes(resource.Type, firstInstanceAttributes(resource.Instances)),
 		})
 	}
 	return report, nil
