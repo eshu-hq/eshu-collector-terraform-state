@@ -6,3 +6,4 @@ ref="${1:?usage: pin-digest.sh <repo:tag>}"
 digest="$(docker inspect --format='{{index .RepoDigests 0}}' "$ref")"
 echo "Pin this in manifest.yaml artifacts:"
 echo "  image: ${digest}"
+# skip-proof: shell-only lane-selection probe
