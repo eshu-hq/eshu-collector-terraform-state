@@ -166,7 +166,12 @@ renamed. The current digest is a documented scaffold placeholder naming no
 pullable artifact (see the comment in `manifest.yaml`): after the first
 image push, resolve the real pushed digest with `scripts/pin-digest.sh`.
 Base images in `Dockerfile` are pinned the same way; re-pin them when
-bumping either base.
+bumping either base. `version` in `manifest.yaml` and the git tag must match
+(`v0.1.0` for `0.1.0`); pushing a `v*` tag runs `release.yml`, which builds,
+signs, and publishes the image plus SBOM and provenance attestations. The
+workflow publishes only when the tag is exactly `v` plus the manifest
+version and points at the protected `main` head; anything else fails before
+anything builds or pushes.
 
 Bare-kind gate: the `conform` path requires a granted core kind to carry a
 `.` namespace prefix unless the caller supplies trusted host-granted
