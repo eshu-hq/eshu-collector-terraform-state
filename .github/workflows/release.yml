@@ -60,14 +60,7 @@ jobs:
             echo "manifest.yaml metadata.version is not MAJOR.MINOR.PATCH[-prerelease]" >&2
             exit 1
           fi
-          matches=false
-          if [[ "${TAG_NAME}" == "v${version}" ]]; then
-            matches=true
-          fi
-          if [[ "${version}" != *-* && "${TAG_NAME}" == "v${version}-"* ]]; then
-            matches=true
-          fi
-          if [[ "${matches}" != true ]]; then
+          if [[ "${TAG_NAME}" != "v${version}" ]]; then
             echo "tag '${TAG_NAME}' does not match manifest.yaml metadata.version 'v${version}'" >&2
             exit 1
           fi
