@@ -1,211 +1,229 @@
 # eshu-collector-terraform-state
 
-Standalone Eshu collector that observes Terraform state artifacts and emits
-source evidence for the `terraform_state` collector kind. This repository was
-scaffolded from `templates/collector` in `eshu-hq/eshu`; the placeholder
-observe/emit core is still in place and the real Terraform state logic port
-is tracked in [PORT_PLAN.md](PORT_PLAN.md).
+**Status: pre-release.** Eshu core still owns this data in production.
+This repo has no authority to publish facts on its own yet.
 
-Identity:
+This collector reads Terraform state files and hands Eshu evidence
+about what Terraform last applied, so you can answer which resources,
+modules, and outputs a state snapshot records.
 
-- Producer: `dev.eshu.collector.terraform-state`, version `0.1.0`
-- Collector kind / grant scope: `terraform_state`
-- Source system: `terraform_state`
-- Metric prefix: `eshu_dp_tfstate_`
+Terraform state is the file Terraform writes after a run to remember
+what it created.
+A *fact* is one small, typed piece of evidence.
+A *claim* is one bounded request to collect one scope.
+The *host* is the Eshu process that starts this collector, sends it a
+claim, and stores the result.
+This collector only collects and returns evidence. It does not store anything itself and never runs Terraform.
 
-Emitted facts (all schema `1.0.0`, all `observed` confidence):
+## What it collects
 
-- `terraform_state_snapshot`, `terraform_state_resource`,
-  `terraform_state_output`, `terraform_state_module`,
-  `terraform_state_provider_binding`, `terraform_state_tag_observation`,
-  `terraform_state_warning`
-- `incident_routing.applied_pagerduty_resource`,
-  `incident_routing.applied_alert_route`
+The table below is generated from `spec.emittedFacts` in
+[manifest.yaml](manifest.yaml).
+That file declares 9 fact kinds, all at schema version `1.0.0` with
+`observed` confidence (read directly from the state artifact).
 
-No `incident_routing.coverage_warning`: the shared component registry
-enforces one owner per fact kind and `dev.eshu.collector.pagerduty` owns
-it (ops-qa installer conflict, eshu-hq/eshu#8868; partial reversal of the
-#9195 EXTEND per arbiter verdict, coverage_warning only).
+| Fact kind | Plain meaning |
+|---|---|
+| `terraform_state_snapshot` | One state snapshot as a whole, with its digest |
+| `terraform_state_resource` | One resource recorded in the state |
+| `terraform_state_output` | One Terraform output recorded in the state |
+| `terraform_state_module` | One module recorded in the state |
+| `terraform_state_provider_binding` | Which provider a module or resource is bound to |
+| `terraform_state_tag_observation` | Tags seen on one state resource |
+| `terraform_state_warning` | Part of the state could not be read or trusted fully |
+| `incident_routing.applied_pagerduty_resource` | A PagerDuty resource Terraform applied |
+| `incident_routing.applied_alert_route` | An alert route Terraform applied |
 
-Explicitly excluded: `terraform_state_candidate` stays git-owned (git-core,
-`core_owned`). This producer must never declare or emit it.
+This collector never declares or emits `terraform_state_candidate`;
+that kind stays owned by git-based collection in Eshu core.
+It also does not emit `incident_routing.coverage_warning`, which the
+PagerDuty collector owns.
+State files can hold secrets.
+Sensitive attribute values are redacted or withheld before emission;
+only allow-listed drift attribute leaves are emitted, and the
+hard-sensitive `aws_iam_policy` document is never emitted.
 
-Pins (the relocated `eshu-sdk` pair core pins in
-[#9111](https://github.com/eshu-hq/eshu/pull/9111); the grant draft cites the
-same pins):
+## How it fits in
 
-- `github.com/eshu-hq/eshu-sdk/collector v0.1.0-rc.3`
-- `github.com/eshu-hq/eshu-sdk/factschema v0.1.0-rc.5`
+```mermaid
+sequenceDiagram
+    participant S as Terraform state (local file or S3 object)
+    participant C as This collector
+    participant H as Eshu host process
+    participant E as Eshu core
+    H->>C: one claim on stdin (--sdk-stdio)
+    C->>S: read the claimed state snapshot
+    S-->>C: state JSON
+    C-->>H: one result with facts on stdout
+    H->>E: validate and commit the facts
+```
 
-Wire protocol: `collector-sdk/v1alpha1`. There are no `replace` directives:
-a clean clone resolves both modules through the Go module proxy.
+In text: Terraform state (local file or S3 object) -> this collector -> Eshu host process -> Eshu core.
 
-The seven bare `terraform_state_*` kinds carry no dot namespace, so the
-harness only accepts them with trusted host-granted coverage: every
-`conformance.Run` in this repo's tests supplies `CoreFacts` authorizations
-for this producer, version, collector kind, and schema plus the
-reserved-kind inventory (the #8851 host-granted-kind path, available in the
-relocated SDK).
+## When to use it
 
-## Build and test from a clean clone
+Use it when Eshu needs evidence of what Terraform applied: the
+resources, outputs, modules, provider bindings, and tags recorded in
+one or more state snapshots, plus PagerDuty routing resources found
+in applied state.
+
+## When not to use it
+
+- Do not use it to run, plan, or apply Terraform. It only reads state.
+- Do not use it as a state browser for humans.
+  It returns facts to the Eshu host; it has no user interface.
+- Do not expect it to show live cloud resources.
+  State can be stale; this collector reports what the state records,
+  not what the cloud has now.
+- Do not feed it state you cannot let it read.
+  It redacts before emission, but the process still reads the file.
+
+## How Eshu runs it
+
+The host runs one claim per process invocation.
+It starts `./collector --sdk-stdio`, writes one
+`collector-sdk/v1alpha1` request to stdin, and reads one result from
+stdout.
+The host owns admission, identity, storage, and recovery.
+This binary never commits facts itself and holds no endpoint, queue,
+or datastore handle to submit anything to.
 
 ```bash
-go mod tidy -diff
-go build ./...
-go vet ./...
-go test ./... -count=1
+go run ./cmd/collector --sdk-stdio < request.json > result.json
 go run ./cmd/collector --input ./testdata/complete.json
 ```
 
-`go.sum` lists only the modules this repo's own imports reach. Importing the
-`factschema` root package pulls in that module's own dependencies, and
-`go mod tidy -diff` then fails until you run `go mod tidy` and commit the
-added `go.sum` lines. The conformance script runs `go mod tidy -diff` first
-so that drift fails before review.
+The binary is also its own installer:
 
-`scripts/run-conformance.sh` runs the same gate CI runs
-(`.github/workflows/ci.yml`).
+```bash
+collector seed --dest DIR --image-ref ghcr.io/eshu-hq/eshu-collector-terraform-state@sha256:<digest>
+```
+
+`seed` writes the collector binary and [manifest.yaml](manifest.yaml)
+into `DIR`.
+Without `--image-ref`, `COLLECTOR_IMAGE_REF` supplies the reference.
+The manifest pins the Linux amd64 image for version `0.1.0` by
+digest:
+`ghcr.io/eshu-hq/eshu-collector-terraform-state@sha256:36b51cee5abe3f7734cbcaeb79a005165a3a9694bd3a62a562799668583dd8e9`.
+The image entrypoint is `/usr/local/bin/collector --sdk-stdio`
+(see [Dockerfile](Dockerfile)).
 
 ## Configuration
 
-Copy `config.example.yaml`. The collector reads one source document
-(`source.input`), emits against one credential-free `sourceURI`, and tracks
-freshness with `freshness.previousDigest`. All payloads pass
-`ValidateShareSafeKeys`; anything sensitive must be redacted before emission
-(see `collector.go` and the redaction test).
+Copy [config.example.yaml](config.example.yaml).
+With `source.input` set, the collector reads one local state file.
+Without it, `discovery` plus `target_scopes` takes the live S3 path:
+bucket filters resolve to exact state objects, and each candidate
+must pass the target-scope allow-list before it is read.
 
-Without `source.input`, a `discovery` plus `target_scopes` activation takes
-the live path: bucket filters and seeds resolve to exact S3 state objects,
-target-scope allowlists bind each candidate, and reads use ambient workload
-credentials only (IRSA web identity, then the process environment triple —
-no credential key exists in config). Each fetched state emits join-key
-facts (resource address, type, mode) plus only contracts-allowlisted drift
-attribute leaves (`tfstatev1.DriftAllowlistFor`, fail-closed; the
-hard-sensitive `aws_iam_policy` document is never emitted) through the
-existing `Collect` contract. Missing objects degrade to partial with a
-`state-missing` warning, throttles release the claim retryable, and a wrong
-bucket fails the claim closed.
+| Name | Required | Default | Meaning |
+|---|---|---|---|
+| `host.sourceSystem` | Yes in the example | `terraform_state` | Source system recorded on facts |
+| `host.scope.id` / `host.scope.kind` | Yes in the example | `component:terraform-state-primary` / `component` | Host scope for the claim |
+| `process.command` / `process.args` | Yes in the example | `./collector` / `--sdk-stdio` | How the host starts this binary |
+| `config.source.mode` | No | `local-file` in the example | Local-file source mode |
+| `config.source.input` | For local mode | Flag default `testdata/complete.json` | State file to read |
+| `config.source.sourceURI` | No | `https://example.invalid/source/terraform-state` | Credential-free source address recorded on facts |
+| `config.freshness.previousDigest` | No | Empty | Prior snapshot digest for unchanged detection |
+| `config.limits.maxRecordsPerClaim` | No | `5000` | Maximum facts in one claim |
+| `config.limits.maxPayloadBytes` | No | `65536` | Maximum bytes in one fact payload |
+| `config.limits.claimTimeoutSeconds` | No | `300` | Maximum wall-clock seconds for one claim |
+| `config.discovery.backend_filters[]` | For live S3 | None | Bucket, region, backend kind, and target scope to search |
+| `config.target_scopes[]` | For live S3 | None | Allow-list: provider, regions, backends, deployment mode |
+| `AWS_S3_ENDPOINT` (env) | No | Unset uses AWS regional endpoints | Trusted S3-compatible base URL (MinIO or offline mirror) |
+| `AWS_STS_ENDPOINT` (env) | No | Unset uses the AWS default | Endpoint for the workload-identity token exchange |
 
-### S3 endpoint override (MinIO / offline)
+Local flags mirror the file form: `--input`, `--source-uri`, `--previous-digest`, `--max-records`, `--max-payload-bytes`, and `--claim-timeout-seconds`. Zero selects the default; negative values fail.
+Endpoint overrides must be credential-free `http` or `https` base
+URLs with no query or fragment.
+Instance-metadata addresses are refused, plain `http` is accepted
+only on loopback (and, for S3 only, single-label in-cluster names
+such as `http://minio:9000`), and error text never echoes the value.
+There is no credential key anywhere in config.
 
-Set `AWS_S3_ENDPOINT` on the collector process to point live S3 reads at an
-S3-compatible endpoint (MinIO, an offline mirror, a VPC endpoint) instead of
-the regional AWS endpoints. Unset or blank keeps the AWS default. The live
-reader is built with `NewHTTPS3Reader`, so the override flows through the
-real claim path, and a misconfigured value fails the claim closed at reader
-construction instead of misdirecting signed reads.
+## Credentials and least privilege
 
-Endpoint contract:
+Live S3 reads use ambient workload credentials only: IRSA web
+identity first (the Kubernetes service account identity exchanged
+for AWS credentials), then the standard process environment
+credential variables.
+No credential key exists in config, and source credentials never
+enter fact payloads, source URIs, logs, or statuses.
+Source URIs that embed `user:secret@host` or `password=`, `secret=`,
+or `token=` query values are refused.
+This repo does not name a specific AWS policy, so grant the workload
+identity only read access to the state buckets and objects the
+allow-list names, and stop there.
 
-- The value is a base URL; requests address it path-style as
-  `<base>/<bucket>/<key>` (ListObjectsV2 as `<base>/<bucket>`). The AWS
-  default instead uses virtual-hosted addressing (`<bucket>.s3.<region>…`),
-  with dotted buckets falling back to path style so TLS never breaks.
-- Cosmetic trailing slashes are trimmed; an operator path prefix is kept.
+## Claim budget and operator signals
 
-Trust posture (enforced by `validateEndpointTrust`, shared with the
-`AWS_STS_ENDPOINT` IRSA override; STS never takes the single-label
-allowance below):
+One claim is bounded by the limits above (defaults: 5,000 records,
+65,536 payload bytes per fact, 300 seconds) and a retry queue bound
+of 8, past which the collector fails terminal instead of queuing
+forever.
+Each run writes one `collector health:` JSON line to stderr with
+liveness, last success time and digest, failure count and reason,
+retry depth, and the effective limits.
+Health text carries no credentials or payloads.
+The manifest declares the metric prefix `eshu_dp_tfstate_`; the
+stderr health line is the operator signal proven by the code here.
+Missing state objects degrade a live claim to partial with a
+`state-missing` warning; throttling releases the claim as retryable;
+a bucket outside the allow-list fails the claim closed.
 
-- Scheme must be `http` or `https`. Plain `http` is accepted on loopback
-  (`localhost`, `127.0.0.0/8`, `::1`) for offline development, and — S3
-  only — on single-label DNS names (no dots, not an IP, e.g.
-  `http://minio:9000`) that resolve inside the operator's own compose or
-  cluster network; every other host requires `https`.
-- No credentials: any `@` (userinfo) is refused, as are query strings and
-  fragments.
-- No instance metadata: `169.254.0.0/16`, IPv6 link-local, and the
-  well-known metadata hostnames (`metadata.google.internal`,
-  `instance-data`) are refused in every scheme.
-- Error text never echoes the configured value.
+## Eshu dependencies
 
-## Least-privilege credentials
+| Dependency | Version or contract | Source |
+|---|---|---|
+| `github.com/eshu-hq/eshu-sdk/collector` | `v0.1.0-rc.3` | `go.mod` |
+| `github.com/eshu-hq/eshu-sdk/factschema` | `v0.1.0-rc.8` | `go.mod` |
+| Host protocol | `collector-sdk/v1alpha1`, `process` adapter | [manifest.yaml](manifest.yaml) |
+| Eshu core compatibility | `>=0.0.5 <0.2.0` | [manifest.yaml](manifest.yaml) |
+| Producer identity | `dev.eshu.collector.terraform-state`, version `0.1.0` | [manifest.yaml](manifest.yaml) |
 
-The collector receives only a bounded claim plus local config. It never gets
-Postgres, graph, queue, lease, reducer, API, or MCP handles. Source
-credentials stay in the collector runtime environment and never enter fact
-payloads, source URIs, logs, or statuses. URIs embedding `user:secret@host`
-or `password=`/`secret=`/`token=` query shapes are refused.
+There are no `replace` directives; a clean clone resolves both SDK modules through the Go module proxy. Producer grants are issued by Eshu core, not this repo. [grant.example.json](grant.example.json) is the request shape: 9 entries, one per emitted kind at schema `1.0.0`, scope `terraform_state`.
 
-## Limits
+## What this never does
 
-Default bounds live in `health.go` (`DefaultResourceUse`): 5000 records per
-claim, 64 KiB per payload, 300 s claim timeout, 8 queued retries. Tune them
-per source and record the values in the cutover issue. Past the retry bound
-the collector fails terminal instead of queuing forever.
+- It never writes to the Eshu graph, Postgres, or any queue.
+  It imports no core storage handle; the host validates and commits.
+- It never commits facts or decides final truth.
+  Its manifest declares reducer phase `source_evidence_only:no_graph_truth`.
+- It never runs Terraform and never writes or locks state.
+- It never emits raw sensitive state values; redaction happens
+  before emission and hard-sensitive documents are withheld.
 
-## Producer grants, revocation, and rollback
-
-Core-owned fact kinds require a live #6709 producer grant naming this
-producer, version, kind, schema, and scope. This collector emits ten
-core-owned kinds, so it ships one grant per kind per schema version in
-`grant.example.json` (ten entries, all producer
-`dev.eshu.collector.terraform-state`, version `0.1.0`, schema `1.0.0`,
-scope `terraform_state`, bounded expiry). A grant's scope is the collector
-kind (`CollectorKind`, declared in `spec.collectorKinds`), not a scope ID
-such as `host.scope.id`: the host matches the grant against the manifest's
-collector kinds, and `grant_test.go` fails when an example drifts from them.
-`grant_test.go` also locks the fail-closed matrix (wrong scope/schema/
-producer refused). Revocation is a core-side grant revoke followed by replay
-from the last committed generation: stop new claims, expire in-flight
-leases, revoke, restore the last supported producer, replay, and verify
-fact/graph/read truth. Two producers never hold one scope+generation at
-once. The full issuance loops, enforcement, and rollback live in
-`PRODUCER_GRANT_DRAFT.md` / `ROLLBACK_DRAFT.md` on the extraction prep
-branch in `eshu-hq/eshu` until cutover; see [PORT_PLAN.md](PORT_PLAN.md).
-
-This repo issues no grants itself: `grant.example.json` is the issuance
-request shape operators submit at cutover.
-
-## Releases
-
-Every artifact in `manifest.yaml` is digest-pinned (`@sha256:…`, never
-`:latest`). `manifest_test.go` enforces pinning plus manifest validity, and
-the all-zero placeholder digest is rejected now that the component is
-renamed. The current digest is a documented scaffold placeholder naming no
-pullable artifact (see the comment in `manifest.yaml`): after the first
-image push, resolve the real pushed digest with `scripts/pin-digest.sh`.
-Base images in `Dockerfile` are pinned the same way; re-pin them when
-bumping either base. `version` in `manifest.yaml` and the git tag must match
-(`v0.1.0` for `0.1.0`); pushing a `v*` tag runs `release.yml`, which builds,
-signs, and publishes the image plus SBOM and provenance attestations. The
-workflow publishes only when the tag is exactly `v` plus the manifest
-version and points at the protected `main` head; anything else fails before
-anything builds or pushes.
-
-Bare-kind gate: the `conform` path requires a granted core kind to carry a
-`.` namespace prefix unless the caller supplies trusted host-granted
-coverage ([#8851](https://github.com/eshu-hq/eshu/issues/8851) relocated the
-SDK modules so the harness accepts it). The seven bare `terraform_state_*`
-kinds therefore pass only with `CoreFacts` coverage — which this repo's
-tests supply and the host supplies at install/activation. See
-[PORT_PLAN.md](PORT_PLAN.md).
-
-## Remote proof
-
-The collector never submits results to core. Under the `process` adapter the
-host starts `./collector --sdk-stdio`, writes one claim on stdin, reads one
-SDK result from stdout, and commits the facts itself. The collector holds no
-endpoint, queue, or datastore handle, so there is nothing for it to submit
-to and no collector-side script can stand in for the host.
-
-To prove a deployment, run the real component lifecycle against a component
-home (see
-[Community extension authoring](https://github.com/eshu-hq/eshu/blob/main/docs/public/extend/community-extension-authoring.md)
-and
-[Component producer grants](https://github.com/eshu-hq/eshu/blob/main/docs/public/reference/component-producer-grants.md)):
+## Build, test, and release
 
 ```bash
-eshu component grant <component-id> --component-home "$HOME_DIR" \
-  --version 0.1.0 --kind <each of the 10 kinds> --schema-version 1.0.0 \
-  --scope terraform_state --expires-in 2160h
-eshu component install manifest.yaml --component-home "$HOME_DIR" \
-  --trust-mode allowlist --allow-id <component-id> --allow-publisher eshu-hq
-eshu component enable <component-id> --component-home "$HOME_DIR" \
-  --instance <instance> --mode scheduled --claims --config config.example.yaml
+make ci
 ```
 
-Then let the coordinator claim a scope and read the committed facts back
-through the target core's own API and MCP surfaces, using the paths in that
-core's API reference. Record the tested core version, topology, and evidence
-location in the cutover issue; credential-free conformance stays in CI.
+`make ci` runs `make lint`, `make test`, and `make race` (see
+[Makefile](Makefile)): vet, lint and format checks, module drift,
+the 500-line file cap, the full test suite, and the race suite with
+a coverage floor (`COVERAGE_FLOOR`, default `80.7`, may only rise).
+`scripts/run-conformance.sh` runs the same conformance gate CI runs.
+Releases: `version` in [manifest.yaml](manifest.yaml) and the git
+tag must match (`v0.1.0` for `0.1.0`).
+Pushing a `v*` tag on the protected `main` head runs the release
+workflow, which builds, signs, and publishes the image with SBOM and
+provenance attestations.
+Any other tag fails before anything builds or pushes.
+Artifacts stay digest-pinned; re-pin after a push with
+`scripts/pin-digest.sh`.
+
+## Docs and related repos
+
+- [PORT_PLAN.md](PORT_PLAN.md) — port plan and grant/rollback pointers
+- [NOT_PORTED.md](NOT_PORTED.md) — what stays in Eshu core
+- [eshu](https://github.com/eshu-hq/eshu) — Eshu core
+- [eshu-sdk](https://github.com/eshu-hq/eshu-sdk) — collector and fact-schema contracts
+- [eshu-deploy](https://github.com/eshu-hq/eshu-deploy) — deployment charts and activations
+
+## Contributing, security, and license
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) before opening a change; it
+names the redaction and source-URI tests that must stay green.
+There is no `SECURITY.md` and no `LICENSE` file in this repo.
+Source files carry `SPDX-License-Identifier: MIT` headers.
