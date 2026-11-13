@@ -1,6 +1,6 @@
 module github.com/eshu-hq/eshu-collector-terraform-state
 
-go 1.26.10
+go 1.26.11
 
 require (
 	github.com/eshu-hq/eshu-sdk/collector v0.1.0-rc.3
